@@ -1,29 +1,43 @@
 #include <LiquidCrystal_I2C.h>
 #include <OneWire.h>
 
+// Software version and date
+#define SWVERSION "0.1"
+#define SWDATE "01-15"
+
+// Pin layout
 #define RELAY_PIN 2
 #define DS_PIN 3
 
+// LCD used
 #define LCD_WIDTH 16
 #define LCD_HEIGHT 2
+#define LCD_ADDRESS 0x27
 
-LiquidCrystal_I2C lcd(0x27, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE);
+// Init subsystems
+LiquidCrystal_I2C lcd(LCD_ADDRESS, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE);
 OneWire ds(DS_PIN);
 
 void setup()
 {
+	char version[20];	
+
 	Serial.begin(9600);
 
+	// Our relay pulls when RELAY_PIN is LOW, this is somewhat
+	// inconvinient, but it should work out just fine
 	pinMode(RELAY_PIN, OUTPUT);
 	digitalWrite(RELAY_PIN, HIGH);
   
 	lcd.begin(LCD_WIDTH, LCD_HEIGHT);               // initialize the lcd 
 	lcd.home ();                   // go home
+
+	// Output some version information on startup
 	lcd.print("SaHa Thermostat");  
 	lcd.setCursor ( 0, 1 );        // go to the next line
-	lcd.print ("ver 0.1, 01-15");
+	sprintf(version, "ver %s %s", SWVERSION, SWDATE);
+	lcd.print (version);
 	delay ( 1000 );
-	lcd.clear();
 
 	return;
 }
@@ -68,6 +82,7 @@ void loop()
 	ds.select(addr);
 	ds.write(0x44,1);         // start conversion, with parasite power on at the end
 
+	// Wait for 1Wire to initialize 
 	delay(1000);     // maybe 750ms is enough, maybe not
 
 	present = ds.reset();
@@ -76,10 +91,7 @@ void loop()
 
 	for ( i = 0; i < 9; i++) {           // we need 9 bytes
 		data[i] = ds.read();
-		Serial.print(data[i], HEX);
-		Serial.print(" ");
 	}
-	Serial.println();
 	
 	LowByte = data[0];
 	HighByte = data[1];
@@ -94,6 +106,7 @@ void loop()
 	tFract = Fract % 10;
 	Fract = Fract / 10;
 	
+	// Use only 1 digit fractions
 	if(tFract > 4) {
 		Fract ++;
 	}
