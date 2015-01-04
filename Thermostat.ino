@@ -5,9 +5,17 @@
 #define SWVERSION "0.1"
 #define SWDATE "01-15"
 
+// Behaviour
+#define BTN_DELAY 50
+
+#define TIMERS 2
+
 // Pin layout
 #define RELAY_PIN 2
 #define DS_PIN 3
+#define UPBTN_PIN 4
+#define ENTBTN_PIN 5
+#define DOWNBTN_PIN 6
 
 // LCD used
 #define LCD_WIDTH 16
@@ -18,15 +26,123 @@
 LiquidCrystal_I2C lcd(LCD_ADDRESS, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE);
 OneWire ds(DS_PIN);
 
+int btnPressed = 0;
+int btnState = 0;
+byte ow_addr[8];
+char cur_temp[20] = "wait...";
+unsigned long timers[TIMERS]; // Countdown timers
+unsigned long timer_millis; // Internal timer
+unsigned long cum_diffMillis=0;
+
+// Check that we actually have temperature sensor,
+// and verify that we don't do anything unless
+// we have one.
+int findOneWire() {
+
+        ds.reset_search();
+        if ( !ds.search(ow_addr)) {
+                ds.reset_search();
+                return 0;
+        }
+
+        if ( OneWire::crc8( ow_addr, 7) != ow_addr[7]) {
+                Serial.print("CRC is not valid!\n");
+                return 2;
+        }
+
+        if (ow_addr[0] == 0x10 || ow_addr[0] == 0x28) {
+		Serial.println("Sensor found");
+                return 1;
+        }
+        else { 
+                Serial.print("Device family is not recognized: 0x");
+                Serial.println(ow_addr[0],HEX);
+                return 3;
+        }
+
+	return 4;
+}
+
+// Read buttons. Current schema requires only that single button
+// functions at a time so this will do.
+int readButtons() {
+
+	int bState = 0;
+	int t_btnPressed = 0;
+	int t_pressed = 0;
+	
+	bState = digitalRead(UPBTN_PIN);
+	if(bState == HIGH) {
+		t_btnPressed = 1;
+		t_pressed = 1;
+	}
+
+	bState = digitalRead(ENTBTN_PIN);
+	if(bState == HIGH) {
+		t_btnPressed = 2;
+		t_pressed = 1;
+	}
+
+	bState = digitalRead(DOWNBTN_PIN);
+	if(bState == HIGH) {
+		t_btnPressed = 3;
+		t_pressed = 1;
+	}
+
+	if(t_pressed != btnState) {
+		timers[0]=BTN_DELAY;
+		btnState = t_pressed;
+	}
+
+	if(btnPressed != t_btnPressed) {
+		
+		if(timers[0] == 0) {
+			btnPressed = t_btnPressed;
+		} 
+	}
+
+	return btnPressed;
+}
+
+// Do timer calculations
+void count_timers() {
+
+	unsigned long diffMillis = 0;
+	unsigned long curMillis = millis();
+
+	diffMillis = curMillis - timer_millis;
+	timer_millis = curMillis;
+
+	for(int i=0;i <= TIMERS; i++) {
+		
+		if(timers[i] >= diffMillis) {
+			timers[i] -= diffMillis;
+		} else {
+			timers[i] = 0;
+		}
+	}
+	
+	return;
+}	
+
 void setup()
 {
 	char version[20];	
 
 	Serial.begin(9600);
 
+	pinMode(UPBTN_PIN, INPUT);
+	pinMode(ENTBTN_PIN, INPUT);
+	pinMode(DOWNBTN_PIN, INPUT);
+	pinMode(RELAY_PIN, OUTPUT);
+
+	// Initialize timers
+	for(int i=0;i <= TIMERS;i++) {
+		timers[i] = 0;
+	}
+
 	// Our relay pulls when RELAY_PIN is LOW, this is somewhat
 	// inconvinient, but it should work out just fine
-	pinMode(RELAY_PIN, OUTPUT);
 	digitalWrite(RELAY_PIN, HIGH);
   
 	lcd.begin(LCD_WIDTH, LCD_HEIGHT);               // initialize the lcd 
@@ -39,80 +155,110 @@ void setup()
 	lcd.print (version);
 	delay ( 1000 );
 
+	lcd.clear();
+	int t_ow = findOneWire();
+
+	while(t_ow != 1) {
+
+		lcd.setCursor(0,0);
+		lcd.print("Sensor error:");
+		lcd.setCursor(0,1);
+
+		switch (t_ow) {
+			case 0:
+				lcd.print("NOT FOUND");
+				break;
+			case 2:	
+				lcd.print("CRC ERROR");
+				break;
+			case 3:
+				lcd.print("WRONG FAMILY");
+				break;
+			case 4:
+				lcd.print("FATAL");
+				break;
+			default:
+				lcd.print("!!!!!");
+				break;	
+		}		
+
+	}
+
+	return;
+}
+
+// Read sensor data and store it in string to cur_temp char[]
+// Uses timers[1] to create non-blocking environment
+void ReadOneWire() {
+
+	int HighByte, LowByte, TReading, SignBit, Tc_100, Whole, Fract, tFract;
+	byte present = 0;
+	byte data[12];
+
+	if(timers[1] == 0) {
+
+		findOneWire(); // No idea why this is needed EVERY time
+		ds.reset();
+		ds.select(ow_addr);
+		ds.write(0x44,1);         // start conversion, with parasite power on at the end
+		Serial.println("Preparing 1wire sensor...");
+		timers[1] = 2000;
+	}
+
+	if(timers[1] < 1000) {
+
+		findOneWire();
+		Serial.println("Reading data...");
+		present = ds.reset();
+		ds.select(ow_addr);
+		ds.write(0xBE);         // Read Scratchpad
+		delay(1);
+
+		for (int i = 0; i < 9; i++) {           // we need 9 bytes
+			data[i] = ds.read();
+		}
+
+		LowByte = data[0];
+		HighByte = data[1];
+		TReading = (HighByte << 8) + LowByte;
+		SignBit = TReading & 0x8000;  // test most sig bit
+		if (SignBit) { // negative
+			TReading = (TReading ^ 0xffff) + 1; // 2's comp
+		}
+		Tc_100 = (6 * TReading) + TReading / 4;    // multiply by (100 * 0.0625) or 6.25
+		Whole = Tc_100 / 100;  // separate off the whole and fractional portions
+		Fract = Tc_100 % 100;
+		tFract = Fract % 10;
+		Fract = Fract / 10;
+
+		// Use only 1 digit fractions, round up if necessary
+		if(tFract > 4) {
+			Fract ++;
+		}
+
+		sprintf(cur_temp, "%c%2d.%1d\337",SignBit ? '-' : '+', Whole, Fract);
+		timers[1] = 0;
+	}
+
 	return;
 }
 
 void loop() 
 {
-	int HighByte, LowByte, TReading, SignBit, Tc_100, Whole, Fract, tFract;
-	byte i;
-	byte present = 0;
-	byte data[12];
-	byte addr[8];
 	char buf[20];
 
-	ds.reset_search();
-	if ( !ds.search(addr)) {
-		lcd.setCursor(0,0);
-		lcd.print("No 1Wire sensors found!            ");
-		Serial.print("No more addresses.\n");
-		ds.reset_search();
-		return;
-	}
-
-	if ( OneWire::crc8( addr, 7) != addr[7]) {
-		lcd.setCursor(0,0);
-		lcd.print("CRC error on 1Wire                ");
-		Serial.print("CRC is not valid!\n");
-		return;
-	}
-
-	if (addr[0] == 0x10 || addr[0] == 0x28) {
-		Serial.print("Known device\n");
-	}
-	else {
-		lcd.setCursor(0,0);
-		lcd.print("Unknown sensor device!            ");
-		Serial.print("Device family is not recognized: 0x");
-		Serial.println(addr[0],HEX);
-		return;
-	}
-
-	ds.reset();
-	ds.select(addr);
-	ds.write(0x44,1);         // start conversion, with parasite power on at the end
-
-	// Wait for 1Wire to initialize 
-	delay(1000);     // maybe 750ms is enough, maybe not
-
-	present = ds.reset();
-	ds.select(addr);    
-	ds.write(0xBE);         // Read Scratchpad
-
-	for ( i = 0; i < 9; i++) {           // we need 9 bytes
-		data[i] = ds.read();
-	}
-	
-	LowByte = data[0];
-	HighByte = data[1];
-	TReading = (HighByte << 8) + LowByte;
-	SignBit = TReading & 0x8000;  // test most sig bit
-	if (SignBit) { // negative
-		TReading = (TReading ^ 0xffff) + 1; // 2's comp
-	}
-	Tc_100 = (6 * TReading) + TReading / 4;    // multiply by (100 * 0.0625) or 6.25
-	Whole = Tc_100 / 100;  // separate off the whole and fractional portions
-	Fract = Tc_100 % 100;
-	tFract = Fract % 10;
-	Fract = Fract / 10;
-	
-	// Use only 1 digit fractions
-	if(tFract > 4) {
-		Fract ++;
-	}
-
-	sprintf(buf, "%c%2d.%1d\337",SignBit ? '-' : '+', Whole, Fract);
+	count_timers(); // Manage time calculations
+	ReadOneWire();
 
 	lcd.setCursor(0,0);
+	lcd.print(cur_temp);
+
+	int btn = readButtons();
+	sprintf(buf,"%d", btn);
+	lcd.setCursor(0,1);
 	lcd.print(buf);
 }
+
+
+
+
