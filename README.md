@@ -26,6 +26,16 @@ this is the basic structure:
   - Again, heaters don't like if you turn them continously on/off
 5. Go to step 1
 
+# Phases
+
+Current setup on working phases
+0. Idle, thermostat off, no burn (obviously)
+1. Warmup timer, burn on
+2. Wait for target temp, burn on
+3. Cooldown timer, burn off
+4. Wait for target temp, burn off
+
+
 # ToDo
 
 - Error handling when 1Wire sensor doesn't work

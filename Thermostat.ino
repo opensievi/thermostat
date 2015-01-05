@@ -16,6 +16,7 @@
 #define UPBTN_PIN 4
 #define ENTBTN_PIN 5
 #define DOWNBTN_PIN 6
+#define TOGGLESW_PIN 7
 
 // LCD used
 #define LCD_WIDTH 16
@@ -29,10 +30,25 @@ OneWire ds(DS_PIN);
 int btnPressed = 0;
 int btnState = 0;
 byte ow_addr[8];
+int cur_phase=0; // current working phase
 char cur_temp[20] = "wait...";
 unsigned long timers[TIMERS]; // Countdown timers
 unsigned long timer_millis; // Internal timer
-unsigned long cum_diffMillis=0;
+
+int uptime[2]; // uptime calculator
+int burntime[2]; // burntime calculator on current uptime
+int timecalc; // Used to calculate spent time
+unsigned long wait_timer; // Used to track warmup/cooldown times
+
+// Wait warmup_timer milliseconds for burner to warm up
+// 600 000 = 10 minutes
+//unsigned long warmup_time = 600000;
+unsigned long warmup_time = 6000;
+
+// Wait cooldown_timer milliseconds for burner to cool down
+// 1 200 000 milliseconds = 20 minutes
+//unsigned long cooldown_time = 1200000;
+unsigned long cooldown_time = 12000;
 
 // Check that we actually have temperature sensor,
 // and verify that we don't do anything unless
@@ -107,18 +123,54 @@ int readButtons() {
 // Do timer calculations
 void count_timers() {
 
-	unsigned long diffMillis = 0;
-	unsigned long curMillis = millis();
+	unsigned long diffMillis = millis() - timer_millis;
+	timer_millis = millis();
 
-	diffMillis = curMillis - timer_millis;
-	timer_millis = curMillis;
-
-	for(int i=0;i <= TIMERS; i++) {
+	for(int i=0;i < TIMERS; i++) {
 		
 		if(timers[i] >= diffMillis) {
 			timers[i] -= diffMillis;
 		} else {
 			timers[i] = 0;
+		}
+	}
+
+	if(wait_timer >= diffMillis) {
+		wait_timer -= diffMillis;
+	} else {
+		wait_timer = 0;
+	}
+
+	// Do time tracking calculations. This isn't millisecond
+	// accurate, but should be close enough for this purpose.
+	timecalc += diffMillis;
+	if(timecalc >= 1000) {
+		timecalc -= 1000;
+		uptime[2]++;
+
+		// If burner is on then update burntime as well
+		if(cur_phase > 0 && cur_phase < 3) {
+			burntime[2]++;
+
+			if(burntime[2]>=60) {
+				burntime[1]++;
+				burntime[2]-=60;
+			}
+
+			if(burntime[2]>=60) {
+				burntime[0]++;
+				burntime[2]-=60;
+			}
+		}
+
+		if(uptime[2]>=60) {
+			uptime[1]++;
+			uptime[2]-=60;
+		}
+
+		if(uptime[2]>=60) {
+			uptime[0]++;
+			uptime[2]-=60;
 		}
 	}
 	
@@ -134,11 +186,18 @@ void setup()
 	pinMode(UPBTN_PIN, INPUT);
 	pinMode(ENTBTN_PIN, INPUT);
 	pinMode(DOWNBTN_PIN, INPUT);
+	pinMode(TOGGLESW_PIN, INPUT);
 	pinMode(RELAY_PIN, OUTPUT);
 
 	// Initialize timers
 	for(int i=0;i <= TIMERS;i++) {
 		timers[i] = 0;
+	}
+
+	// Initialize time calculators
+	for(int i=0; i <= 2; i++) {
+		uptime[i]=0;
+		burntime[i]=0;
 	}
 
 	// Our relay pulls when RELAY_PIN is LOW, this is somewhat
@@ -192,8 +251,8 @@ void setup()
 void ReadOneWire() {
 
 	int HighByte, LowByte, TReading, SignBit, Tc_100, Whole, Fract, tFract;
-	byte present = 0;
 	byte data[12];
+	byte present = 0;
 
 	if(timers[1] == 0) {
 
@@ -236,12 +295,76 @@ void ReadOneWire() {
 			Fract ++;
 		}
 
-		sprintf(cur_temp, "%c%2d.%1d\337",SignBit ? '-' : '+', Whole, Fract);
+		sprintf(cur_temp, "%c%2d.%1d\337   ",SignBit ? '-' : '+', Whole, Fract);
 		timers[1] = 0;
 	}
 
 	return;
 }
+
+void changePhase() {
+	int togglestate;
+	togglestate = digitalRead(TOGGLESW_PIN);
+	
+	switch(cur_phase) {
+		case 0: // Standby
+			// Switch to warmup
+			if(togglestate == HIGH) {
+				cur_phase=1;
+				wait_timer = warmup_time;
+			}
+			break;
+		case 1: // Warmup
+			// Change state ONLY if we aren't
+			// in warmup state
+			if(wait_timer == 0) {
+				if(togglestate == HIGH) {
+					cur_phase=2;
+				} else {
+					// If we turned heating off during
+					// warmup phase move to cooldown
+					cur_phase=3;
+				}
+			}
+			break;
+		case 2: // Warming phase
+			// We'd need target temp for this...
+			if(togglestate != HIGH) {
+				wait_timer = cooldown_time;
+				cur_phase = 3;
+			}
+			break;
+		case 3: // Cooldown phase
+			if(wait_timer == 0) {
+				cur_phase = 4;
+			}
+			break;
+		case 4: // Wait for temperature to drop
+			// We'd need target temp for this too...
+			if(togglestate != HIGH) {
+				cur_phase = 0;
+			}
+			break;
+		default:
+			// Something goes BADLY wrong if this
+			// ever happens. We go to infinite loop
+			// and shut everything down.
+			char buf[20];
+			digitalWrite(RELAY_PIN,HIGH); // Shut off burner
+			while(1) {
+				lcd.home();
+				lcd.print("PHASE ERROR            ");
+				lcd.setCursor(0,1);
+				sprintf(buf,"Phase: %d              ",cur_phase);
+				lcd.print(buf);
+				delay(10000);
+			}
+			break;
+	}
+}
+
+
+
 
 void loop() 
 {
@@ -249,14 +372,25 @@ void loop()
 
 	count_timers(); // Manage time calculations
 	ReadOneWire();
+	changePhase();
 
 	lcd.setCursor(0,0);
 	lcd.print(cur_temp);
+
 
 	int btn = readButtons();
 	sprintf(buf,"%d", btn);
 	lcd.setCursor(0,1);
 	lcd.print(buf);
+
+	sprintf(buf,"%d", cur_phase);
+	lcd.setCursor(2,1);
+	lcd.print(buf);
+
+	sprintf(buf,"%lu", wait_timer);
+	lcd.setCursor(4,1);
+	lcd.print(buf);
+
 }
 
 
