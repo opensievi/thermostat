@@ -7,7 +7,6 @@
 
 // Behaviour
 #define BTN_DELAY 50
-
 #define TIMERS 2
 
 // Pin layout
@@ -29,15 +28,18 @@ OneWire ds(DS_PIN);
 
 int btnPressed = 0;
 int btnState = 0;
+int textState = 0;
+
 byte ow_addr[8];
 int cur_phase=0; // current working phase
 char cur_temp[20] = "wait...";
 unsigned long timers[TIMERS]; // Countdown timers
 unsigned long timer_millis; // Internal timer
 
-int uptime[2]; // uptime calculator
-int burntime[2]; // burntime calculator on current uptime
+int uptime[3]; // uptime calculator
+int burntime[3]; // burntime calculator on current uptime
 int timecalc; // Used to calculate spent time
+unsigned long textTime = 2000;
 unsigned long wait_timer; // Used to track warmup/cooldown times
 
 // Wait warmup_timer milliseconds for burner to warm up
@@ -141,14 +143,20 @@ void count_timers() {
 		wait_timer = 0;
 	}
 
+	if(textTime >= diffMillis) {
+		textTime -= diffMillis;
+	} else {
+		textTime = 0;
+	}
+
 	// Do time tracking calculations. This isn't millisecond
 	// accurate, but should be close enough for this purpose.
 	timecalc += diffMillis;
 	if(timecalc >= 1000) {
 		timecalc -= 1000;
-		uptime[2]++;
 
 		// If burner is on then update burntime as well
+		/*
 		if(cur_phase > 0 && cur_phase < 3) {
 			burntime[2]++;
 
@@ -157,12 +165,13 @@ void count_timers() {
 				burntime[2]-=60;
 			}
 
-			if(burntime[2]>=60) {
+			if(burntime[1]>=60) {
 				burntime[0]++;
 				burntime[2]-=60;
 			}
-		}
+		}*/
 
+		uptime[2]++;
 		if(uptime[2]>=60) {
 			uptime[1]++;
 			uptime[2]-=60;
@@ -190,7 +199,7 @@ void setup()
 	pinMode(RELAY_PIN, OUTPUT);
 
 	// Initialize timers
-	for(int i=0;i <= TIMERS;i++) {
+	for(int i=0;i < TIMERS;i++) {
 		timers[i] = 0;
 	}
 
@@ -377,8 +386,43 @@ void loop()
 	lcd.setCursor(0,0);
 	lcd.print(cur_temp);
 
+	// Display phase texts
+	int tminus = (wait_timer / 1000) / 60;
 
-	int btn = readButtons();
+	switch(cur_phase) {
+		case 0:
+			if(textState == 1) {
+				sprintf(buf,"Up: %d:%02d:%02d  ",uptime[0],uptime[1],uptime[2]);
+			} else if(textState == 2) {
+				sprintf(buf,"Burn: %d:%02d:%02d ",burntime[0],burntime[1],burntime[2]);
+			} else {
+				sprintf(buf,"Standby...      ");
+			}
+			if( textTime == 0) {
+				textState++;
+				textTime = 3000;
+				if(textState > 2) {
+					textState = 0;
+				}
+			}
+			break;
+		case 1:
+			sprintf(buf,"Warming, T-%dm     ", tminus);
+			break;
+		case 2:
+			sprintf(buf,"Rising temp        ");
+			break;
+		case 3:
+			sprintf(buf,"Cooling, T-%dm     ", tminus);
+			break;
+		case 4:
+			sprintf(buf,"Dropping temp      ");
+			break;
+	}
+
+	lcd.setCursor(0,1);
+	lcd.print(buf);
+	/*int btn = readButtons();
 	sprintf(buf,"%d", btn);
 	lcd.setCursor(0,1);
 	lcd.print(buf);
@@ -389,7 +433,7 @@ void loop()
 
 	sprintf(buf,"%lu", wait_timer);
 	lcd.setCursor(4,1);
-	lcd.print(buf);
+	lcd.print(buf);*/
 
 }
 
