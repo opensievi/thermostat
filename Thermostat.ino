@@ -156,7 +156,6 @@ void count_timers() {
 		timecalc -= 1000;
 
 		// If burner is on then update burntime as well
-		/*
 		if(cur_phase > 0 && cur_phase < 3) {
 			burntime[2]++;
 
@@ -167,9 +166,9 @@ void count_timers() {
 
 			if(burntime[1]>=60) {
 				burntime[0]++;
-				burntime[2]-=60;
+				burntime[1]-=60;
 			}
-		}*/
+		}
 
 		uptime[2]++;
 		if(uptime[2]>=60) {
@@ -177,9 +176,9 @@ void count_timers() {
 			uptime[2]-=60;
 		}
 
-		if(uptime[2]>=60) {
+		if(uptime[1]>=60) {
 			uptime[0]++;
-			uptime[2]-=60;
+			uptime[1]-=60;
 		}
 	}
 	
