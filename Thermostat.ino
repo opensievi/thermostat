@@ -2,7 +2,7 @@
 #include <OneWire.h>
 
 // Software version and date
-#define SWVERSION "0.1"
+#define SWVERSION "0.5"
 #define SWDATE "01-15"
 
 // Behaviour
@@ -16,6 +16,7 @@
 #define ENTBTN_PIN 5
 #define DOWNBTN_PIN 6
 #define TOGGLESW_PIN 7
+#define LED1_PIN 13
 
 // LCD used
 #define LCD_WIDTH 16
@@ -26,13 +27,17 @@
 LiquidCrystal_I2C lcd(LCD_ADDRESS, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE);
 OneWire ds(DS_PIN);
 
+// There's quite a few phase tracking variables here,
+// maybe we could take some of them off, maybe?
 int btnPressed = 0;
 int btnState = 0;
 int textState = 0;
 
 byte ow_addr[8];
 int cur_phase=0; // current working phase
+int cur_subphase=0; // some phases require some refining...
 char cur_temp[20] = "wait...";
+int f_cur_temp;
 unsigned long timers[TIMERS]; // Countdown timers
 unsigned long timer_millis; // Internal timer
 
@@ -45,12 +50,18 @@ unsigned long wait_timer; // Used to track warmup/cooldown times
 // Wait warmup_timer milliseconds for burner to warm up
 // 600 000 = 10 minutes
 //unsigned long warmup_time = 600000;
-unsigned long warmup_time = 6000;
+unsigned long warmup_time = 65000;
 
 // Wait cooldown_timer milliseconds for burner to cool down
 // 1 200 000 milliseconds = 20 minutes
 //unsigned long cooldown_time = 1200000;
 unsigned long cooldown_time = 12000;
+
+// Start / stop temperatures
+// We multiple temps by 10, so 25 degrees becomes
+// 250 and so on, so we don't need to use floats
+int low_temp = 240;
+int high_temp = 285;
 
 // Check that we actually have temperature sensor,
 // and verify that we don't do anything unless
@@ -196,6 +207,7 @@ void setup()
 	pinMode(DOWNBTN_PIN, INPUT);
 	pinMode(TOGGLESW_PIN, INPUT);
 	pinMode(RELAY_PIN, OUTPUT);
+	pinMode(LED1_PIN, OUTPUT);
 
 	// Initialize timers
 	for(int i=0;i < TIMERS;i++) {
@@ -211,6 +223,7 @@ void setup()
 	// Our relay pulls when RELAY_PIN is LOW, this is somewhat
 	// inconvinient, but it should work out just fine
 	digitalWrite(RELAY_PIN, HIGH);
+	digitalWrite(LED1_PIN, LOW);
   
 	lcd.begin(LCD_WIDTH, LCD_HEIGHT);               // initialize the lcd 
 	lcd.home ();                   // go home
@@ -298,12 +311,14 @@ void ReadOneWire() {
 		tFract = Fract % 10;
 		Fract = Fract / 10;
 
+		f_cur_temp = Whole*10 + Fract;
+
 		// Use only 1 digit fractions, round up if necessary
 		if(tFract > 4) {
 			Fract ++;
 		}
 
-		sprintf(cur_temp, "%c%2d.%1d\337   ",SignBit ? '-' : '+', Whole, Fract);
+		sprintf(cur_temp, "%c%2d.%1d\337 ",SignBit ? '-' : '+', Whole, Fract);
 		timers[1] = 0;
 	}
 
@@ -316,41 +331,70 @@ void changePhase() {
 	
 	switch(cur_phase) {
 		case 0: // Standby
+			if(cur_subphase == 0) {
+				digitalWrite(LED1_PIN, LOW);
+				cur_subphase++;
+			}
 			// Switch to warmup
 			if(togglestate == HIGH) {
-				cur_phase=1;
-				wait_timer = warmup_time;
+				digitalWrite(LED1_PIN, HIGH);
+				cur_phase=4;
+				cur_subphase=0;
 			}
 			break;
 		case 1: // Warmup
 			// Change state ONLY if we aren't
 			// in warmup state
-			if(wait_timer == 0) {
+
+			// Start burner	and reset timer
+			if(cur_subphase == 0) {
+				wait_timer = warmup_time;
+				digitalWrite(RELAY_PIN, LOW); 
+				cur_subphase = 1;
+			}
+
+			if(wait_timer == 0 && cur_subphase == 1) {
+				cur_subphase=0;
 				if(togglestate == HIGH) {
 					cur_phase=2;
 				} else {
 					// If we turned heating off during
 					// warmup phase move to cooldown
 					cur_phase=3;
+					digitalWrite(RELAY_PIN, HIGH);
 				}
 			}
 			break;
 		case 2: // Warming phase
-			// We'd need target temp for this...
-			if(togglestate != HIGH) {
+
+			// If switch is turned off then switch instantly to cooldown mode
+			// or switch to cooldown until temperature has risen enough
+			if(togglestate != HIGH || f_cur_temp >= high_temp) {
 				wait_timer = cooldown_time;
 				cur_phase = 3;
+
+				// Turn heater off
+				digitalWrite(RELAY_PIN, HIGH);
 			}
+
 			break;
 		case 3: // Cooldown phase
+
+			// We stand by no matter what's the temperature
 			if(wait_timer == 0) {
 				cur_phase = 4;
 			}
 			break;
 		case 4: // Wait for temperature to drop
-			// We'd need target temp for this too...
+
+			if(f_cur_temp <= low_temp) {
+				// Go to warm up cycle
+				cur_phase = 1;
+			}
+
 			if(togglestate != HIGH) {
 				cur_phase = 0;
+				cur_subphase = 0;
 			}
 			break;
 		default:
@@ -387,19 +431,22 @@ void loop()
 
 	// Display phase texts
 	int tminus = (wait_timer / 1000) / 60;
+	char t_txt[5];
+	int whole;
+	int fract;
 
 	switch(cur_phase) {
 		case 0:
 			if(textState == 1) {
-				sprintf(buf,"Up: %d:%02d:%02d  ",uptime[0],uptime[1],uptime[2]);
+				sprintf(buf,"Up: %2d:%02d:%02d  ",uptime[0],uptime[1],uptime[2]);
 			} else if(textState == 2) {
-				sprintf(buf,"Burn: %d:%02d:%02d ",burntime[0],burntime[1],burntime[2]);
+				sprintf(buf,"Burn: %2d:%02d:%02d  ",burntime[0],burntime[1],burntime[2]);
 			} else {
 				sprintf(buf,"Standby...      ");
 			}
 			if( textTime == 0) {
 				textState++;
-				textTime = 3000;
+				textTime = 5000;
 				if(textState > 2) {
 					textState = 0;
 				}
@@ -409,13 +456,17 @@ void loop()
 			sprintf(buf,"Warming, T-%dm     ", tminus);
 			break;
 		case 2:
-			sprintf(buf,"Rising temp        ");
+			whole = high_temp / 10;
+			fract = high_temp % 10;
+			sprintf(buf,"Heating to %2d.%d\337",whole,fract);
 			break;
 		case 3:
-			sprintf(buf,"Cooling, T-%dm     ", tminus);
+			sprintf(buf,"Cooldown, T-%dm     ", tminus);
 			break;
 		case 4:
-			sprintf(buf,"Dropping temp      ");
+			whole = low_temp / 10;
+			fract = low_temp % 10;
+			sprintf(buf,"Cooling to %2d.%d\337",whole,fract);
 			break;
 	}
 
