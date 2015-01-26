@@ -7,7 +7,8 @@
 
 // Behaviour
 #define BTN_DELAY 50
-#define TIMERS 2
+#define MENU_DELAY 7000
+#define TIMERS 4
 
 // Pin layout
 #define RELAY_PIN 2
@@ -31,9 +32,13 @@ OneWire ds(DS_PIN);
 // maybe we could take some of them off, maybe?
 int btnPressed = 0;
 int btnState = 0;
+int btnLock = 0;
 int textState = 0;
 
 byte ow_addr[8];
+int cur_menu_phase=0; // current menu phase(page)
+int cur_menu_state=0; // 0 = display, 1 = edit..
+
 int cur_phase=0; // current working phase
 int cur_subphase=0; // some phases require some refining...
 char cur_temp[20] = "wait...";
@@ -130,7 +135,12 @@ int readButtons() {
 		} 
 	}
 
-	return btnPressed;
+	if(btnLock == btnPressed) {
+		return 0;
+	} else {
+		btnLock = 0;
+		return btnPressed;
+	}
 }
 
 // Do timer calculations
@@ -195,6 +205,49 @@ void count_timers() {
 	
 	return;
 }	
+
+
+void menu() {
+
+	char buf[20];
+
+	if(timers[3] == 0) {
+		cur_menu_phase=0;
+	}
+
+	if(cur_menu_phase < 0) {
+		cur_menu_phase=4;
+	}
+
+	if(cur_menu_phase > 4) {
+		cur_menu_phase=0;
+	}
+
+        // If there's a need we'll change the menu
+        switch(cur_menu_phase) {
+
+                case 1:
+			sprintf(buf,"%-16s","Low temp limit");
+                        break;
+
+                case 2:
+			sprintf(buf,"%-16s","Hight temp limit");
+                        break;
+
+                case 3:
+			sprintf(buf,"%-16s","Warmup burn time");
+                        break;
+
+                case 4:
+			sprintf(buf,"%-16s","Cooldown time");
+                        break;
+        }
+
+	lcd.home();
+	lcd.print(buf);
+        return;
+}
+
 
 void setup()
 {
@@ -426,8 +479,30 @@ void loop()
 	ReadOneWire();
 	changePhase();
 
+	int btn = readButtons();
+	switch(btn) {
+	
+		case 1:
+			btnLock = 1;
+			cur_menu_phase++;
+			timers[3]=MENU_DELAY;
+			break;
+
+		case 3:
+			btnLock = 3;
+			cur_menu_phase--;
+			timers[3]=MENU_DELAY;
+			break;
+	}
+
+	if(cur_menu_phase != 0) {
+		menu();
+		return;
+	}
+
 	lcd.setCursor(0,0);
-	lcd.print(cur_temp);
+	sprintf(buf, "%-16s", cur_temp);
+	lcd.print(buf);
 
 	// Display phase texts
 	int tminus = (wait_timer / 1000) / 60;
@@ -472,18 +547,7 @@ void loop()
 
 	lcd.setCursor(0,1);
 	lcd.print(buf);
-	/*int btn = readButtons();
-	sprintf(buf,"%d", btn);
-	lcd.setCursor(0,1);
-	lcd.print(buf);
 
-	sprintf(buf,"%d", cur_phase);
-	lcd.setCursor(2,1);
-	lcd.print(buf);
-
-	sprintf(buf,"%lu", wait_timer);
-	lcd.setCursor(4,1);
-	lcd.print(buf);*/
 
 }
 
