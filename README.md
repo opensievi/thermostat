@@ -1,4 +1,4 @@
-# SaHa Thermostat
+# Open Sievi Thermostat
 
 This arudino project is to control diesel powered
 heaters. Temperature is read with DS18B20 (or similar) sensor, 
@@ -29,6 +29,7 @@ this is the basic structure:
 # Phases
 
 Current setup on working phases
+
 0. Idle, thermostat off, no burn (obviously)
 1. Warmup timer, burn on
 2. Wait for target temp, burn on
@@ -53,4 +54,8 @@ Current setup on working phases
 
 - LCD control works
 - 1Wire reading works
+
+## 0.5
+
+- Basic thermostat functionality works
 

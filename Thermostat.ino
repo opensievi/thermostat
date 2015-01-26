@@ -282,7 +282,7 @@ void setup()
 	lcd.home ();                   // go home
 
 	// Output some version information on startup
-	lcd.print("SaHa Thermostat");  
+	lcd.print("O-S Thermostat");  
 	lcd.setCursor ( 0, 1 );        // go to the next line
 	sprintf(version, "ver %s %s", SWVERSION, SWDATE);
 	lcd.print (version);
