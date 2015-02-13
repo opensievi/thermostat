@@ -7,7 +7,7 @@
 
 // Behaviour
 #define BTN_DELAY 50
-#define MENU_DELAY 7000
+#define MENU_DELAY 10000
 #define TIMERS 4
 
 // Pin layout
@@ -207,11 +207,39 @@ void count_timers() {
 }	
 
 
-void menu() {
+void menu(int btn) {
 
-	char buf[20];
+	char buf[25];
+	char buf2[25];
 
+	if(cur_menu_state == 0) {
+
+		switch(btn) {
+	
+			case 1:
+				cur_menu_phase++;
+				timers[3]=MENU_DELAY;
+				break;
+
+			case 2:
+				cur_menu_phase--;
+				timers[3]=MENU_DELAY;
+				break;
+		}
+	} 
+
+	// Return if there's nothing to do
+	if(cur_menu_phase == 0) {
+		return;
+	}
+
+	if(btn > 0) {
+		timers[3] = MENU_DELAY;
+	}
+
+	// When timer reaches zero return to main menu
 	if(timers[3] == 0) {
+		cur_menu_state=0;
 		cur_menu_phase=0;
 	}
 
@@ -227,24 +255,106 @@ void menu() {
         switch(cur_menu_phase) {
 
                 case 1:
+			if(cur_menu_state) {
+				switch(btn) {
+					
+					case 1:
+						low_temp+=10;
+						if(low_temp > 600) {
+							low_temp = 600;
+						}
+						break;
+					case 2:
+						low_temp-=10;
+						if(low_temp < 0) {
+							low_temp = 0;
+						}
+						break;
+				}
+			}
 			sprintf(buf,"%-16s","Low temp limit");
+			sprintf(buf2,"%-2d\337%-11s",low_temp/10," ");
                         break;
 
                 case 2:
-			sprintf(buf,"%-16s","Hight temp limit");
+			if(cur_menu_state) {
+				switch(btn) {
+					case 1:
+						high_temp+=10;
+						if(high_temp > 600) {
+							high_temp = 600;
+						}
+						break;
+					case 2:
+						high_temp-=10;
+						if(high_temp < 0) {
+							high_temp = 0;
+						}
+						break;
+				}
+			}
+
+			sprintf(buf,"%-16s","High temp limit");
+			sprintf(buf2,"%-2d\337%11s",high_temp/10," ");
                         break;
 
                 case 3:
+			if(cur_menu_state) {
+				switch(btn) {
+					case 1:
+						warmup_time += 60000;
+						if(warmup_time > 3600000) {
+							warmup_time = 3600000;
+						}
+						break;
+					case 2:
+						if(warmup_time > 60000) {
+							warmup_time -= 60000;
+						} else {
+							warmup_time = 0;
+						}
+						break;
+				}
+			}
 			sprintf(buf,"%-16s","Warmup burn time");
+			sprintf(buf2,"%-2lumin%9s",warmup_time/1000/60," ");
                         break;
 
                 case 4:
+			if(cur_menu_state) {
+				switch(btn) {
+					case 1:
+						cooldown_time += 60000;
+						if(cooldown_time > 3600000) {
+							cooldown_time = 3600000;
+						}
+						break;
+					case 2:
+						if(cooldown_time > 60000) {
+							cooldown_time -= 60000;
+						} else {
+							cooldown_time = 0;
+						}
+						break;
+				}
+			}
 			sprintf(buf,"%-16s","Cooldown time");
+			sprintf(buf2,"%-2lumin%9s",cooldown_time/1000/60," ");
                         break;
         }
 
-	lcd.home();
+	// Pad second line
+	if(cur_menu_state) {
+		sprintf(buf2,"%s<-",buf2);
+	} else {
+		sprintf(buf2,"%s  ",buf2);
+	}
+
+	lcd.setCursor(0,0);
 	lcd.print(buf);
+	lcd.setCursor(0,1);
+	lcd.print(buf2);
+	//lcd.print("0123456789012345");
         return;
 }
 
@@ -326,7 +436,7 @@ void ReadOneWire() {
 
 	int HighByte, LowByte, TReading, SignBit, Tc_100, Whole, Fract, tFract;
 	byte data[12];
-	byte present = 0;
+	byte present;
 
 	if(timers[1] == 0) {
 
@@ -335,7 +445,7 @@ void ReadOneWire() {
 		ds.select(ow_addr);
 		ds.write(0x44,1);         // start conversion, with parasite power on at the end
 		Serial.println("Preparing 1wire sensor...");
-		timers[1] = 2000;
+		timers[1] = 2500;
 	}
 
 	if(timers[1] < 1000) {
@@ -476,37 +586,44 @@ void loop()
 	char buf[20];
 
 	count_timers(); // Manage time calculations
-	ReadOneWire();
-	changePhase();
+	ReadOneWire(); // Read temperature sensor
+
+	// Run phase changes if necessary, this is
+	// EXTREMELY important, since if phases won't
+	// change as expected the whole thing is going to 
+	// break.
+	changePhase(); 
 
 	int btn = readButtons();
-	switch(btn) {
-	
-		case 1:
-			btnLock = 1;
-			cur_menu_phase++;
-			timers[3]=MENU_DELAY;
-			break;
-
-		case 3:
-			btnLock = 3;
-			cur_menu_phase--;
-			timers[3]=MENU_DELAY;
-			break;
+	// Set button lock so we have to release button 
+	// before taking another action. This is somewhat
+	// inconvinient, but will do for now.
+	if(btn > 0) {
+		btnLock = btn;
 	}
 
+	// Enter edit mode
+	if(cur_menu_phase > 0 && btn == 3) {
+		if(cur_menu_state == 1) {
+			cur_menu_state = 0;
+		} else {
+			cur_menu_state = 1;
+		}
+		return;
+	}
+
+	menu(btn);
+	// Don't display running data over menu
 	if(cur_menu_phase != 0) {
-		menu();
 		return;
 	}
 
 	lcd.setCursor(0,0);
-	sprintf(buf, "%-16s", cur_temp);
+	sprintf(buf, "%-7s [%d][%d]", cur_temp, btn,btnLock);
 	lcd.print(buf);
 
 	// Display phase texts
 	int tminus = (wait_timer / 1000) / 60;
-	char t_txt[5];
 	int whole;
 	int fract;
 
