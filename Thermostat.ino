@@ -59,6 +59,7 @@ int btnState = 0;
 int btnLock = 0;
 int textState = 0;
 int bglState = 0;
+int oneWireState = 0;
 
 byte ow_addr[8];
 int cur_menu_phase=0; // current menu phase(page)
@@ -116,7 +117,7 @@ int findOneWire() {
 		delay(1000);
 	}
 
-	sensors.setResolution(insideThermometer, 10);
+	sensors.setResolution(insideThermometer, 12);
 	return 0;
 }
 
@@ -483,19 +484,23 @@ void setup()
 // Uses timers[1] to create non-blocking environment
 void ReadOneWire() {
 
-	if(timers[1] == 0) {
+	if(timers[1] == 0 && oneWireState == 0) {
 
 		Serial.println("Requesting temperatures from 1wire bus");
 		sensors.requestTemperatures();
 		timers[1] = 2500;
+		oneWireState = 1;
+		timers[1] = 1000;
 	}
 
-	if(timers[1] < 1000) {
+	if(timers[1] == 0 && oneWireState == 1) {
 
 		float cTemp;
 		int temp100;
 		int Whole, Fract, tFract;
 		int positive=0;
+		oneWireState = 0;
+		timers[1] = 2500;
 
 		Serial.print("Reading data from 1wire...");
 		cTemp = sensors.getTempC(insideThermometer);
@@ -513,8 +518,8 @@ void ReadOneWire() {
 		if(tFract > 4)
 			Fract++;
 
+		f_cur_temp = Whole*10 + Fract;
 		sprintf(cur_temp, "%c%2d.%1d\337 ",positive ? '+' : '-', Whole, Fract);
-		timers[1] = 0;
 	}
 
 	return;
