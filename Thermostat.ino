@@ -1,5 +1,6 @@
 #include <LiquidCrystal_I2C.h>
 #include <OneWire.h>
+#include <DallasTemperature.h>
 #include <EEPROM.h>
 
 // Software version and writing time
@@ -13,7 +14,7 @@
 #define BTN_DELAY 50 // 50ms delay for button to stop jitter
 #define MENU_DELAY 10000 // 10seconds delay for menu to exit automatically
 #define TIMERS 4 // Number of timers
-#define BACKLIGHT_DELAY 10000 // Backlight delay
+#define BACKLIGHT_DELAY 1200000 // Backlight delay, 20minutes
 
 // Pin layout
 #define RELAY_PIN 2
@@ -48,6 +49,8 @@ struct StoredConf {
 // Init subsystems
 LiquidCrystal_I2C lcd(LCD_ADDRESS, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE);
 OneWire ds(DS_PIN);
+DallasTemperature sensors(&ds);
+DeviceAddress insideThermometer;
 
 // There's quite a few phase tracking variables here,
 // maybe we could take some of them off, maybe?
@@ -103,28 +106,18 @@ int high_temp;
 // we have one.
 int findOneWire() {
 
-        ds.reset_search();
-        if ( !ds.search(ow_addr)) {
-                ds.reset_search();
-                return 0;
-        }
+	sensors.begin();
+	
+	while (!sensors.getAddress(insideThermometer, 0)) { 
+		Serial.println("Unable to find address for Device 0");
+		lcd.clear();
+		lcd.home();
+		lcd.print("No sensor address!");
+		delay(1000);
+	}
 
-        if ( OneWire::crc8( ow_addr, 7) != ow_addr[7]) {
-                Serial.print("CRC is not valid!\n");
-                return 2;
-        }
-
-        if (ow_addr[0] == 0x10 || ow_addr[0] == 0x28) {
-		Serial.println("Sensor found");
-                return 1;
-        }
-        else { 
-                Serial.print("Device family is not recognized: 0x");
-                Serial.println(ow_addr[0],HEX);
-                return 3;
-        }
-
-	return 4;
+	sensors.setResolution(insideThermometer, 10);
+	return 0;
 }
 
 // Read buttons. Current schema requires only that single button
@@ -479,33 +472,7 @@ void setup()
 	delay ( 1000 );
 
 	lcd.clear();
-	int t_ow = findOneWire();
-
-	while(t_ow != 1) {
-
-		lcd.setCursor(0,0);
-		lcd.print("Sensor error:");
-		lcd.setCursor(0,1);
-
-		switch (t_ow) {
-			case 0:
-				lcd.print("NOT FOUND");
-				break;
-			case 2:	
-				lcd.print("CRC ERROR");
-				break;
-			case 3:
-				lcd.print("WRONG FAMILY");
-				break;
-			case 4:
-				lcd.print("FATAL");
-				break;
-			default:
-				lcd.print("!!!!!");
-				break;	
-		}		
-
-	}
+	findOneWire();
 
 	timers[2] = BACKLIGHT_DELAY;
 	bglState = 1;
@@ -516,54 +483,37 @@ void setup()
 // Uses timers[1] to create non-blocking environment
 void ReadOneWire() {
 
-	int HighByte, LowByte, TReading, SignBit, Tc_100, Whole, Fract, tFract;
-	byte data[12];
-	byte present;
-
 	if(timers[1] == 0) {
 
-		findOneWire(); // No idea why this is needed EVERY time
-		ds.reset();
-		ds.select(ow_addr);
-		ds.write(0x44,1);         // start conversion, with parasite power on at the end
-		Serial.println("Preparing 1wire sensor...");
+		Serial.println("Requesting temperatures from 1wire bus");
+		sensors.requestTemperatures();
 		timers[1] = 2500;
 	}
 
 	if(timers[1] < 1000) {
 
-		findOneWire();
-		Serial.println("Reading data...");
-		present = ds.reset();
-		ds.select(ow_addr);
-		ds.write(0xBE);         // Read Scratchpad
-		delay(1);
+		float cTemp;
+		int temp100;
+		int Whole, Fract, tFract;
+		int positive=0;
 
-		for (int i = 0; i < 9; i++) {           // we need 9 bytes
-			data[i] = ds.read();
+		Serial.print("Reading data from 1wire...");
+		cTemp = sensors.getTempC(insideThermometer);
+		Serial.println(cTemp);
+
+		if(cTemp > 0) {
+			positive=1;
 		}
 
-		LowByte = data[0];
-		HighByte = data[1];
-		TReading = (HighByte << 8) + LowByte;
-		SignBit = TReading & 0x8000;  // test most sig bit
-		if (SignBit) { // negative
-			TReading = (TReading ^ 0xffff) + 1; // 2's comp
-		}
-		Tc_100 = (6 * TReading) + TReading / 4;    // multiply by (100 * 0.0625) or 6.25
-		Whole = Tc_100 / 100;  // separate off the whole and fractional portions
-		Fract = Tc_100 % 100;
-		tFract = Fract % 10;
-		Fract = Fract / 10;
+		//sprintf(cur_temp, "%.1f\337", cTemp);
+		Whole = int(cTemp);
+		Fract = int((cTemp - Whole) * 100);
+		tFract = Fract - (Fract/10)*10;
+		Fract = Fract/10;
+		if(tFract > 4)
+			Fract++;
 
-		f_cur_temp = Whole*10 + Fract;
-
-		// Use only 1 digit fractions, round up if necessary
-		if(tFract > 4) {
-			Fract ++;
-		}
-
-		sprintf(cur_temp, "%c%2d.%1d\337 ",SignBit ? '-' : '+', Whole, Fract);
+		sprintf(cur_temp, "%c%2d.%1d\337 ",positive ? '+' : '-', Whole, Fract);
 		timers[1] = 0;
 	}
 
