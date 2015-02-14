@@ -1,14 +1,15 @@
 #include <LiquidCrystal_I2C.h>
 #include <OneWire.h>
+#include <EEPROM.h>
 
 // Software version and date
 #define SWVERSION "0.5"
 #define SWDATE "01-15"
 
 // Behaviour
-#define BTN_DELAY 50
-#define MENU_DELAY 10000
-#define TIMERS 4
+#define BTN_DELAY 50 // 50ms delay for button to stop jitter
+#define MENU_DELAY 10000 // 10seconds delay for menu to exit automatically
+#define TIMERS 4 // Number of timers
 
 // Pin layout
 #define RELAY_PIN 2
@@ -41,8 +42,10 @@ int cur_menu_state=0; // 0 = display, 1 = edit..
 
 int cur_phase=0; // current working phase
 int cur_subphase=0; // some phases require some refining...
+
 char cur_temp[20] = "wait...";
 int f_cur_temp;
+
 unsigned long timers[TIMERS]; // Countdown timers
 unsigned long timer_millis; // Internal timer
 
@@ -52,21 +55,23 @@ int timecalc; // Used to calculate spent time
 unsigned long textTime = 2000;
 unsigned long wait_timer; // Used to track warmup/cooldown times
 
+// Warmup & cooldown timers are unsigned, so MAKE SURE that they
+// won't loop over. If they go to negative the burntime goes to
+// about 49 days instead of few minutes.
+
 // Wait warmup_timer milliseconds for burner to warm up
-// 600 000 = 10 minutes
-//unsigned long warmup_time = 600000;
-unsigned long warmup_time = 65000;
+// 900 000 = 15 minutes
+unsigned long warmup_time = 900000;
 
 // Wait cooldown_timer milliseconds for burner to cool down
 // 1 200 000 milliseconds = 20 minutes
-//unsigned long cooldown_time = 1200000;
-unsigned long cooldown_time = 12000;
+unsigned long cooldown_time = 1200000;
 
 // Start / stop temperatures
 // We multiple temps by 10, so 25 degrees becomes
 // 250 and so on, so we don't need to use floats
-int low_temp = 240;
-int high_temp = 285;
+int low_temp = 100;
+int high_temp = 200;
 
 // Check that we actually have temperature sensor,
 // and verify that we don't do anything unless
@@ -243,6 +248,8 @@ void menu(int btn) {
 		cur_menu_phase=0;
 	}
 
+	// Keep menu phase in valid range (0..4) and
+	// loop it over if necessary.
 	if(cur_menu_phase < 0) {
 		cur_menu_phase=4;
 	}
@@ -251,7 +258,8 @@ void menu(int btn) {
 		cur_menu_phase=0;
 	}
 
-        // If there's a need we'll change the menu
+        // Manage menu. This code both shows the menu items and handles
+	// changing of values.
         switch(cur_menu_phase) {
 
                 case 1:
@@ -325,6 +333,7 @@ void menu(int btn) {
 				switch(btn) {
 					case 1:
 						cooldown_time += 60000;
+						// Millisecond times. 3.6e6ms == 1 hour
 						if(cooldown_time > 3600000) {
 							cooldown_time = 3600000;
 						}
@@ -354,7 +363,6 @@ void menu(int btn) {
 	lcd.print(buf);
 	lcd.setCursor(0,1);
 	lcd.print(buf2);
-	//lcd.print("0123456789012345");
         return;
 }
 
@@ -523,6 +531,7 @@ void changePhase() {
 				} else {
 					// If we turned heating off during
 					// warmup phase move to cooldown
+					wait_timer = cooldown_time;
 					cur_phase=3;
 					digitalWrite(RELAY_PIN, HIGH);
 				}
@@ -584,6 +593,8 @@ void changePhase() {
 void loop() 
 {
 	char buf[20];
+	char buf2[17];
+	char phasetxt[10]="WAIT";
 
 	count_timers(); // Manage time calculations
 	ReadOneWire(); // Read temperature sensor
@@ -618,10 +629,6 @@ void loop()
 		return;
 	}
 
-	lcd.setCursor(0,0);
-	sprintf(buf, "%-7s [%d][%d]", cur_temp, btn,btnLock);
-	lcd.print(buf);
-
 	// Display phase texts
 	int tminus = (wait_timer / 1000) / 60;
 	int whole;
@@ -629,6 +636,7 @@ void loop()
 
 	switch(cur_phase) {
 		case 0:
+			sprintf(phasetxt, "%s", "STDBY");
 			if(textState == 1) {
 				sprintf(buf,"Up: %2d:%02d:%02d  ",uptime[0],uptime[1],uptime[2]);
 			} else if(textState == 2) {
@@ -645,22 +653,30 @@ void loop()
 			}
 			break;
 		case 1:
+			sprintf(phasetxt,"%s", "WARMUP");
 			sprintf(buf,"Warming, T-%dm     ", tminus);
 			break;
 		case 2:
+			sprintf(phasetxt, "%s", "WARMING");
 			whole = high_temp / 10;
 			fract = high_temp % 10;
 			sprintf(buf,"Heating to %2d.%d\337",whole,fract);
 			break;
 		case 3:
+			sprintf(phasetxt,"%s", "COOLDOWN");
 			sprintf(buf,"Cooldown, T-%dm     ", tminus);
 			break;
 		case 4:
+			sprintf(phasetxt, "%s", "COOLING");
 			whole = low_temp / 10;
 			fract = low_temp % 10;
 			sprintf(buf,"Cooling to %2d.%d\337",whole,fract);
 			break;
 	}
+
+	sprintf(buf2, "%-6s%9s", cur_temp, phasetxt);
+	lcd.setCursor(0,0);
+	lcd.print(buf2);
 
 	lcd.setCursor(0,1);
 	lcd.print(buf);
