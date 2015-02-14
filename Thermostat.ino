@@ -2,14 +2,18 @@
 #include <OneWire.h>
 #include <EEPROM.h>
 
-// Software version and date
-#define SWVERSION "0.5"
-#define SWDATE "01-15"
+// Software version and writing time
+#define SWVERSION "1.0"
+#define SWDATE "02-15"
+
+#define CONFIG_VERSION "OSTH1"
+#define CONFIG_START 32
 
 // Behaviour
 #define BTN_DELAY 50 // 50ms delay for button to stop jitter
 #define MENU_DELAY 10000 // 10seconds delay for menu to exit automatically
 #define TIMERS 4 // Number of timers
+#define BACKLIGHT_DELAY 10000 // Backlight delay
 
 // Pin layout
 #define RELAY_PIN 2
@@ -25,6 +29,22 @@
 #define LCD_HEIGHT 2
 #define LCD_ADDRESS 0x27
 
+// http://playground.arduino.cc/Code/EEPROMLoadAndSaveSettings
+struct StoredConf {
+	char confversion[6];
+	unsigned long c_warmup_time;
+	unsigned long c_cooldown_time;
+	int c_low_temp;
+	int c_high_temp;
+} storage = {
+	// Default values
+	CONFIG_VERSION,
+	900000,
+	1200000,
+	100,
+	200
+};
+
 // Init subsystems
 LiquidCrystal_I2C lcd(LCD_ADDRESS, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE);
 OneWire ds(DS_PIN);
@@ -35,6 +55,7 @@ int btnPressed = 0;
 int btnState = 0;
 int btnLock = 0;
 int textState = 0;
+int bglState = 0;
 
 byte ow_addr[8];
 int cur_menu_phase=0; // current menu phase(page)
@@ -61,17 +82,21 @@ unsigned long wait_timer; // Used to track warmup/cooldown times
 
 // Wait warmup_timer milliseconds for burner to warm up
 // 900 000 = 15 minutes
-unsigned long warmup_time = 900000;
+//unsigned long warmup_time = 900000;
+unsigned long warmup_time;
 
 // Wait cooldown_timer milliseconds for burner to cool down
 // 1 200 000 milliseconds = 20 minutes
-unsigned long cooldown_time = 1200000;
+//unsigned long cooldown_time = 1200000;
+unsigned long cooldown_time;
 
 // Start / stop temperatures
 // We multiple temps by 10, so 25 degrees becomes
 // 250 and so on, so we don't need to use floats
-int low_temp = 100;
-int high_temp = 200;
+//int low_temp = 100;
+//int high_temp = 200;
+int low_temp;
+int high_temp;
 
 // Check that we actually have temperature sensor,
 // and verify that we don't do anything unless
@@ -251,10 +276,10 @@ void menu(int btn) {
 	// Keep menu phase in valid range (0..4) and
 	// loop it over if necessary.
 	if(cur_menu_phase < 0) {
-		cur_menu_phase=4;
+		cur_menu_phase=5;
 	}
 
-	if(cur_menu_phase > 4) {
+	if(cur_menu_phase > 5) {
 		cur_menu_phase=0;
 	}
 
@@ -350,6 +375,32 @@ void menu(int btn) {
 			sprintf(buf,"%-16s","Cooldown time");
 			sprintf(buf2,"%-2lumin%9s",cooldown_time/1000/60," ");
                         break;
+
+		case 5:
+			sprintf(buf,"%-16s", "Save values");
+			if(cur_menu_state) {
+				// Save config here, we just halt menu
+				// for at this point. This causes MENU_DELAY 
+				// (10seconds) lock to operations, but
+				// we don't need to save values often anyways
+				sprintf(buf2,"%-16s","Writing EEPROM");
+				
+				// We need to update variables on storage struct at
+				// this point. Might be more convinient to actually
+				// use conf variables directly, but this will do for
+				// now.
+				storage.c_warmup_time = warmup_time;
+				storage.c_cooldown_time = cooldown_time;
+				storage.c_low_temp = low_temp;
+				storage.c_high_temp = high_temp;
+				for (unsigned int t=0; t<sizeof(storage); t++) {
+					EEPROM.write(CONFIG_START + t, *((char*)&storage + t));
+				}
+			} else {
+				sprintf(buf2,"%-16s", "Press enter.");
+			}
+			break;
+
         }
 
 	// Pad second line
@@ -395,7 +446,28 @@ void setup()
 	// inconvinient, but it should work out just fine
 	digitalWrite(RELAY_PIN, HIGH);
 	digitalWrite(LED1_PIN, LOW);
-  
+
+	// Read configuration from EEPROM, or if they're
+	// not found use default values
+	if (	EEPROM.read(CONFIG_START + 0) == CONFIG_VERSION[0] &&
+		EEPROM.read(CONFIG_START + 1) == CONFIG_VERSION[1] &&
+		EEPROM.read(CONFIG_START + 2) == CONFIG_VERSION[2]) {
+
+		Serial.println("Reading EEPROM");
+		for (unsigned int t=0; t<sizeof(storage); t++) {
+		      *((char*)&storage + t) = EEPROM.read(CONFIG_START + t);
+		      Serial.println(*((char*)&storage + t));
+		}
+	}
+	// Move values from configuration to actual variables used.
+	// This is a bit useless step, since we could use variables
+	// directly from configuration, but at this point I won't fix
+	// this
+	warmup_time = storage.c_warmup_time;
+	cooldown_time = storage.c_cooldown_time;
+	low_temp = storage.c_low_temp;
+	high_temp = storage.c_high_temp;
+
 	lcd.begin(LCD_WIDTH, LCD_HEIGHT);               // initialize the lcd 
 	lcd.home ();                   // go home
 
@@ -435,6 +507,8 @@ void setup()
 
 	}
 
+	timers[2] = BACKLIGHT_DELAY;
+	bglState = 1;
 	return;
 }
 
@@ -508,6 +582,7 @@ void changePhase() {
 			}
 			// Switch to warmup
 			if(togglestate == HIGH) {
+				timers[2] = BACKLIGHT_DELAY; 
 				digitalWrite(LED1_PIN, HIGH);
 				cur_phase=4;
 				cur_subphase=0;
@@ -610,7 +685,23 @@ void loop()
 	// before taking another action. This is somewhat
 	// inconvinient, but will do for now.
 	if(btn > 0) {
+		// Update backlight delay on every button press
+		timers[2] = BACKLIGHT_DELAY;
 		btnLock = btn;
+	}
+
+	// Shut down backlight if necessary
+	if(bglState == 1 && timers[2] == 0) {
+		lcd.noBacklight();
+		bglState = 0;
+	}
+
+	if(bglState == 0 && timers[2] > 0) {
+		// If backlight is off then do nothing, just 
+		// start backlight.
+		lcd.backlight();
+		bglState = 1;
+		return;
 	}
 
 	// Enter edit mode

@@ -46,7 +46,8 @@ There's quite a few of them, so some documentation is necessary.
 1. OneWire read delay
   - 1Wire sensors require 750-1000ms delay from read command to process
     read. This is non-blocking counter for that
-2. Not used?!?
+2. Backlight delay
+  - When this hits 0 disable backlight from display
 3. Menu delay
   - Counts down couple of seconds and returns UI from menu if user doesn't
     do anything
