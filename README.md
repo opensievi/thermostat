@@ -36,6 +36,22 @@ Current setup on working phases
 3. Cooldown timer, burn off
 4. Wait for target temp, burn off
 
+# Timers
+
+Program runs various timers, stored on timers -array in milliseconds.
+There's quite a few of them, so some documentation is necessary.
+
+0. Button delay
+  - Used to remove jittering from switches
+1. OneWire read delay
+  - 1Wire sensors require 750-1000ms delay from read command to process
+    read. This is non-blocking counter for that
+2. Backlight delay
+  - When this hits 0 disable backlight from display
+3. Menu delay
+  - Counts down couple of seconds and returns UI from menu if user doesn't
+    do anything
+   
 
 # ToDo
 

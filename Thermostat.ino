@@ -1,14 +1,20 @@
 #include <LiquidCrystal_I2C.h>
 #include <OneWire.h>
+#include <DallasTemperature.h>
+#include <EEPROM.h>
 
-// Software version and date
-#define SWVERSION "0.5"
-#define SWDATE "01-15"
+// Software version and writing time
+#define SWVERSION "1.0"
+#define SWDATE "02-15"
+
+#define CONFIG_VERSION "OSTH1"
+#define CONFIG_START 32
 
 // Behaviour
-#define BTN_DELAY 50
-#define MENU_DELAY 7000
-#define TIMERS 4
+#define BTN_DELAY 50 // 50ms delay for button to stop jitter
+#define MENU_DELAY 10000 // 10seconds delay for menu to exit automatically
+#define TIMERS 4 // Number of timers
+#define BACKLIGHT_DELAY 1200000 // Backlight delay, 20minutes
 
 // Pin layout
 #define RELAY_PIN 2
@@ -24,9 +30,27 @@
 #define LCD_HEIGHT 2
 #define LCD_ADDRESS 0x27
 
+// http://playground.arduino.cc/Code/EEPROMLoadAndSaveSettings
+struct StoredConf {
+	char confversion[6];
+	unsigned long c_warmup_time;
+	unsigned long c_cooldown_time;
+	int c_low_temp;
+	int c_high_temp;
+} storage = {
+	// Default values
+	CONFIG_VERSION,
+	900000,
+	1200000,
+	100,
+	200
+};
+
 // Init subsystems
 LiquidCrystal_I2C lcd(LCD_ADDRESS, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE);
 OneWire ds(DS_PIN);
+DallasTemperature sensors(&ds);
+DeviceAddress insideThermometer;
 
 // There's quite a few phase tracking variables here,
 // maybe we could take some of them off, maybe?
@@ -34,6 +58,8 @@ int btnPressed = 0;
 int btnState = 0;
 int btnLock = 0;
 int textState = 0;
+int bglState = 0;
+int oneWireState = 0;
 
 byte ow_addr[8];
 int cur_menu_phase=0; // current menu phase(page)
@@ -41,8 +67,10 @@ int cur_menu_state=0; // 0 = display, 1 = edit..
 
 int cur_phase=0; // current working phase
 int cur_subphase=0; // some phases require some refining...
+
 char cur_temp[20] = "wait...";
 int f_cur_temp;
+
 unsigned long timers[TIMERS]; // Countdown timers
 unsigned long timer_millis; // Internal timer
 
@@ -52,49 +80,45 @@ int timecalc; // Used to calculate spent time
 unsigned long textTime = 2000;
 unsigned long wait_timer; // Used to track warmup/cooldown times
 
+// Warmup & cooldown timers are unsigned, so MAKE SURE that they
+// won't loop over. If they go to negative the burntime goes to
+// about 49 days instead of few minutes.
+
 // Wait warmup_timer milliseconds for burner to warm up
-// 600 000 = 10 minutes
-//unsigned long warmup_time = 600000;
-unsigned long warmup_time = 65000;
+// 900 000 = 15 minutes
+//unsigned long warmup_time = 900000;
+unsigned long warmup_time;
 
 // Wait cooldown_timer milliseconds for burner to cool down
 // 1 200 000 milliseconds = 20 minutes
 //unsigned long cooldown_time = 1200000;
-unsigned long cooldown_time = 12000;
+unsigned long cooldown_time;
 
 // Start / stop temperatures
 // We multiple temps by 10, so 25 degrees becomes
 // 250 and so on, so we don't need to use floats
-int low_temp = 240;
-int high_temp = 285;
+//int low_temp = 100;
+//int high_temp = 200;
+int low_temp;
+int high_temp;
 
 // Check that we actually have temperature sensor,
 // and verify that we don't do anything unless
 // we have one.
 int findOneWire() {
 
-        ds.reset_search();
-        if ( !ds.search(ow_addr)) {
-                ds.reset_search();
-                return 0;
-        }
+	sensors.begin();
+	
+	while (!sensors.getAddress(insideThermometer, 0)) { 
+		Serial.println("Unable to find address for Device 0");
+		lcd.clear();
+		lcd.home();
+		lcd.print("No sensor address!");
+		delay(1000);
+	}
 
-        if ( OneWire::crc8( ow_addr, 7) != ow_addr[7]) {
-                Serial.print("CRC is not valid!\n");
-                return 2;
-        }
-
-        if (ow_addr[0] == 0x10 || ow_addr[0] == 0x28) {
-		Serial.println("Sensor found");
-                return 1;
-        }
-        else { 
-                Serial.print("Device family is not recognized: 0x");
-                Serial.println(ow_addr[0],HEX);
-                return 3;
-        }
-
-	return 4;
+	sensors.setResolution(insideThermometer, 12);
+	return 0;
 }
 
 // Read buttons. Current schema requires only that single button
@@ -207,44 +231,183 @@ void count_timers() {
 }	
 
 
-void menu() {
+void menu(int btn) {
 
-	char buf[20];
+	char buf[25];
+	char buf2[25];
 
+	if(cur_menu_state == 0) {
+
+		switch(btn) {
+	
+			case 1:
+				cur_menu_phase++;
+				timers[3]=MENU_DELAY;
+				break;
+
+			case 2:
+				cur_menu_phase--;
+				timers[3]=MENU_DELAY;
+				break;
+		}
+	} 
+
+	// Return if there's nothing to do
+	if(cur_menu_phase == 0) {
+		return;
+	}
+
+	if(btn > 0) {
+		timers[3] = MENU_DELAY;
+	}
+
+	// When timer reaches zero return to main menu
 	if(timers[3] == 0) {
+		cur_menu_state=0;
 		cur_menu_phase=0;
 	}
 
+	// Keep menu phase in valid range (0..4) and
+	// loop it over if necessary.
 	if(cur_menu_phase < 0) {
-		cur_menu_phase=4;
+		cur_menu_phase=5;
 	}
 
-	if(cur_menu_phase > 4) {
+	if(cur_menu_phase > 5) {
 		cur_menu_phase=0;
 	}
 
-        // If there's a need we'll change the menu
+        // Manage menu. This code both shows the menu items and handles
+	// changing of values.
         switch(cur_menu_phase) {
 
                 case 1:
+			if(cur_menu_state) {
+				switch(btn) {
+					
+					case 1:
+						low_temp+=10;
+						if(low_temp > 600) {
+							low_temp = 600;
+						}
+						break;
+					case 2:
+						low_temp-=10;
+						if(low_temp < 0) {
+							low_temp = 0;
+						}
+						break;
+				}
+			}
 			sprintf(buf,"%-16s","Low temp limit");
+			sprintf(buf2,"%-2d\337%-11s",low_temp/10," ");
                         break;
 
                 case 2:
-			sprintf(buf,"%-16s","Hight temp limit");
+			if(cur_menu_state) {
+				switch(btn) {
+					case 1:
+						high_temp+=10;
+						if(high_temp > 600) {
+							high_temp = 600;
+						}
+						break;
+					case 2:
+						high_temp-=10;
+						if(high_temp < 0) {
+							high_temp = 0;
+						}
+						break;
+				}
+			}
+
+			sprintf(buf,"%-16s","High temp limit");
+			sprintf(buf2,"%-2d\337%11s",high_temp/10," ");
                         break;
 
                 case 3:
+			if(cur_menu_state) {
+				switch(btn) {
+					case 1:
+						warmup_time += 60000;
+						if(warmup_time > 3600000) {
+							warmup_time = 3600000;
+						}
+						break;
+					case 2:
+						if(warmup_time > 60000) {
+							warmup_time -= 60000;
+						} else {
+							warmup_time = 0;
+						}
+						break;
+				}
+			}
 			sprintf(buf,"%-16s","Warmup burn time");
+			sprintf(buf2,"%-2lumin%9s",warmup_time/1000/60," ");
                         break;
 
                 case 4:
+			if(cur_menu_state) {
+				switch(btn) {
+					case 1:
+						cooldown_time += 60000;
+						// Millisecond times. 3.6e6ms == 1 hour
+						if(cooldown_time > 3600000) {
+							cooldown_time = 3600000;
+						}
+						break;
+					case 2:
+						if(cooldown_time > 60000) {
+							cooldown_time -= 60000;
+						} else {
+							cooldown_time = 0;
+						}
+						break;
+				}
+			}
 			sprintf(buf,"%-16s","Cooldown time");
+			sprintf(buf2,"%-2lumin%9s",cooldown_time/1000/60," ");
                         break;
+
+		case 5:
+			sprintf(buf,"%-16s", "Save values");
+			if(cur_menu_state) {
+				// Save config here, we just halt menu
+				// for at this point. This causes MENU_DELAY 
+				// (10seconds) lock to operations, but
+				// we don't need to save values often anyways
+				sprintf(buf2,"%-16s","Writing EEPROM");
+				
+				// We need to update variables on storage struct at
+				// this point. Might be more convinient to actually
+				// use conf variables directly, but this will do for
+				// now.
+				storage.c_warmup_time = warmup_time;
+				storage.c_cooldown_time = cooldown_time;
+				storage.c_low_temp = low_temp;
+				storage.c_high_temp = high_temp;
+				for (unsigned int t=0; t<sizeof(storage); t++) {
+					EEPROM.write(CONFIG_START + t, *((char*)&storage + t));
+				}
+			} else {
+				sprintf(buf2,"%-16s", "Press enter.");
+			}
+			break;
+
         }
 
-	lcd.home();
+	// Pad second line
+	if(cur_menu_state) {
+		sprintf(buf2,"%s<-",buf2);
+	} else {
+		sprintf(buf2,"%s  ",buf2);
+	}
+
+	lcd.setCursor(0,0);
 	lcd.print(buf);
+	lcd.setCursor(0,1);
+	lcd.print(buf2);
         return;
 }
 
@@ -277,7 +440,28 @@ void setup()
 	// inconvinient, but it should work out just fine
 	digitalWrite(RELAY_PIN, HIGH);
 	digitalWrite(LED1_PIN, LOW);
-  
+
+	// Read configuration from EEPROM, or if they're
+	// not found use default values
+	if (	EEPROM.read(CONFIG_START + 0) == CONFIG_VERSION[0] &&
+		EEPROM.read(CONFIG_START + 1) == CONFIG_VERSION[1] &&
+		EEPROM.read(CONFIG_START + 2) == CONFIG_VERSION[2]) {
+
+		Serial.println("Reading EEPROM");
+		for (unsigned int t=0; t<sizeof(storage); t++) {
+		      *((char*)&storage + t) = EEPROM.read(CONFIG_START + t);
+		      Serial.println(*((char*)&storage + t));
+		}
+	}
+	// Move values from configuration to actual variables used.
+	// This is a bit useless step, since we could use variables
+	// directly from configuration, but at this point I won't fix
+	// this
+	warmup_time = storage.c_warmup_time;
+	cooldown_time = storage.c_cooldown_time;
+	low_temp = storage.c_low_temp;
+	high_temp = storage.c_high_temp;
+
 	lcd.begin(LCD_WIDTH, LCD_HEIGHT);               // initialize the lcd 
 	lcd.home ();                   // go home
 
@@ -289,34 +473,10 @@ void setup()
 	delay ( 1000 );
 
 	lcd.clear();
-	int t_ow = findOneWire();
+	findOneWire();
 
-	while(t_ow != 1) {
-
-		lcd.setCursor(0,0);
-		lcd.print("Sensor error:");
-		lcd.setCursor(0,1);
-
-		switch (t_ow) {
-			case 0:
-				lcd.print("NOT FOUND");
-				break;
-			case 2:	
-				lcd.print("CRC ERROR");
-				break;
-			case 3:
-				lcd.print("WRONG FAMILY");
-				break;
-			case 4:
-				lcd.print("FATAL");
-				break;
-			default:
-				lcd.print("!!!!!");
-				break;	
-		}		
-
-	}
-
+	timers[2] = BACKLIGHT_DELAY;
+	bglState = 1;
 	return;
 }
 
@@ -324,55 +484,42 @@ void setup()
 // Uses timers[1] to create non-blocking environment
 void ReadOneWire() {
 
-	int HighByte, LowByte, TReading, SignBit, Tc_100, Whole, Fract, tFract;
-	byte data[12];
-	byte present = 0;
+	if(timers[1] == 0 && oneWireState == 0) {
 
-	if(timers[1] == 0) {
-
-		findOneWire(); // No idea why this is needed EVERY time
-		ds.reset();
-		ds.select(ow_addr);
-		ds.write(0x44,1);         // start conversion, with parasite power on at the end
-		Serial.println("Preparing 1wire sensor...");
-		timers[1] = 2000;
+		Serial.println("Requesting temperatures from 1wire bus");
+		sensors.requestTemperatures();
+		timers[1] = 2500;
+		oneWireState = 1;
+		timers[1] = 1000;
 	}
 
-	if(timers[1] < 1000) {
+	if(timers[1] == 0 && oneWireState == 1) {
 
-		findOneWire();
-		Serial.println("Reading data...");
-		present = ds.reset();
-		ds.select(ow_addr);
-		ds.write(0xBE);         // Read Scratchpad
-		delay(1);
+		float cTemp;
+		int temp100;
+		int Whole, Fract, tFract;
+		int positive=0;
+		oneWireState = 0;
+		timers[1] = 2500;
 
-		for (int i = 0; i < 9; i++) {           // we need 9 bytes
-			data[i] = ds.read();
+		Serial.print("Reading data from 1wire...");
+		cTemp = sensors.getTempC(insideThermometer);
+		Serial.println(cTemp);
+
+		if(cTemp > 0) {
+			positive=1;
 		}
 
-		LowByte = data[0];
-		HighByte = data[1];
-		TReading = (HighByte << 8) + LowByte;
-		SignBit = TReading & 0x8000;  // test most sig bit
-		if (SignBit) { // negative
-			TReading = (TReading ^ 0xffff) + 1; // 2's comp
-		}
-		Tc_100 = (6 * TReading) + TReading / 4;    // multiply by (100 * 0.0625) or 6.25
-		Whole = Tc_100 / 100;  // separate off the whole and fractional portions
-		Fract = Tc_100 % 100;
-		tFract = Fract % 10;
-		Fract = Fract / 10;
+		//sprintf(cur_temp, "%.1f\337", cTemp);
+		Whole = int(cTemp);
+		Fract = int((cTemp - Whole) * 100);
+		tFract = Fract - (Fract/10)*10;
+		Fract = Fract/10;
+		if(tFract > 4)
+			Fract++;
 
 		f_cur_temp = Whole*10 + Fract;
-
-		// Use only 1 digit fractions, round up if necessary
-		if(tFract > 4) {
-			Fract ++;
-		}
-
-		sprintf(cur_temp, "%c%2d.%1d\337 ",SignBit ? '-' : '+', Whole, Fract);
-		timers[1] = 0;
+		sprintf(cur_temp, "%c%2d.%1d\337 ",positive ? '+' : '-', Whole, Fract);
 	}
 
 	return;
@@ -390,6 +537,7 @@ void changePhase() {
 			}
 			// Switch to warmup
 			if(togglestate == HIGH) {
+				timers[2] = BACKLIGHT_DELAY; 
 				digitalWrite(LED1_PIN, HIGH);
 				cur_phase=4;
 				cur_subphase=0;
@@ -413,6 +561,7 @@ void changePhase() {
 				} else {
 					// If we turned heating off during
 					// warmup phase move to cooldown
+					wait_timer = cooldown_time;
 					cur_phase=3;
 					digitalWrite(RELAY_PIN, HIGH);
 				}
@@ -474,44 +623,66 @@ void changePhase() {
 void loop() 
 {
 	char buf[20];
+	char buf2[17];
+	char phasetxt[10]="WAIT";
 
 	count_timers(); // Manage time calculations
-	ReadOneWire();
-	changePhase();
+	ReadOneWire(); // Read temperature sensor
+
+	// Run phase changes if necessary, this is
+	// EXTREMELY important, since if phases won't
+	// change as expected the whole thing is going to 
+	// break.
+	changePhase(); 
 
 	int btn = readButtons();
-	switch(btn) {
-	
-		case 1:
-			btnLock = 1;
-			cur_menu_phase++;
-			timers[3]=MENU_DELAY;
-			break;
-
-		case 3:
-			btnLock = 3;
-			cur_menu_phase--;
-			timers[3]=MENU_DELAY;
-			break;
+	// Set button lock so we have to release button 
+	// before taking another action. This is somewhat
+	// inconvinient, but will do for now.
+	if(btn > 0) {
+		// Update backlight delay on every button press
+		timers[2] = BACKLIGHT_DELAY;
+		btnLock = btn;
 	}
 
-	if(cur_menu_phase != 0) {
-		menu();
+	// Shut down backlight if necessary
+	if(bglState == 1 && timers[2] == 0) {
+		lcd.noBacklight();
+		bglState = 0;
+	}
+
+	if(bglState == 0 && timers[2] > 0) {
+		// If backlight is off then do nothing, just 
+		// start backlight.
+		lcd.backlight();
+		bglState = 1;
 		return;
 	}
 
-	lcd.setCursor(0,0);
-	sprintf(buf, "%-16s", cur_temp);
-	lcd.print(buf);
+	// Enter edit mode
+	if(cur_menu_phase > 0 && btn == 3) {
+		if(cur_menu_state == 1) {
+			cur_menu_state = 0;
+		} else {
+			cur_menu_state = 1;
+		}
+		return;
+	}
+
+	menu(btn);
+	// Don't display running data over menu
+	if(cur_menu_phase != 0) {
+		return;
+	}
 
 	// Display phase texts
 	int tminus = (wait_timer / 1000) / 60;
-	char t_txt[5];
 	int whole;
 	int fract;
 
 	switch(cur_phase) {
 		case 0:
+			sprintf(phasetxt, "%s", "STDBY");
 			if(textState == 1) {
 				sprintf(buf,"Up: %2d:%02d:%02d  ",uptime[0],uptime[1],uptime[2]);
 			} else if(textState == 2) {
@@ -528,22 +699,30 @@ void loop()
 			}
 			break;
 		case 1:
+			sprintf(phasetxt,"%s", "WARMUP");
 			sprintf(buf,"Warming, T-%dm     ", tminus);
 			break;
 		case 2:
+			sprintf(phasetxt, "%s", "WARMING");
 			whole = high_temp / 10;
 			fract = high_temp % 10;
 			sprintf(buf,"Heating to %2d.%d\337",whole,fract);
 			break;
 		case 3:
+			sprintf(phasetxt,"%s", "COOLDOWN");
 			sprintf(buf,"Cooldown, T-%dm     ", tminus);
 			break;
 		case 4:
+			sprintf(phasetxt, "%s", "COOLING");
 			whole = low_temp / 10;
 			fract = low_temp % 10;
 			sprintf(buf,"Cooling to %2d.%d\337",whole,fract);
 			break;
 	}
+
+	sprintf(buf2, "%-6s%9s", cur_temp, phasetxt);
+	lcd.setCursor(0,0);
+	lcd.print(buf2);
 
 	lcd.setCursor(0,1);
 	lcd.print(buf);
