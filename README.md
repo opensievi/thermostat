@@ -37,6 +37,15 @@ Current setup on working phases
 4. Wait for target temp, burn off
 
 
+# ToDo
+
+- Error handling when 1Wire sensor doesn't work
+- User interface (menu, current phase, etc)
+- Relay control
+- LCD backlight control
+- Different phases
+- Lots of other things...
+
 # Version history
 
 (We'll need some kind of roadmap tool)
