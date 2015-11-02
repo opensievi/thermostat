@@ -4,8 +4,8 @@
 #include <EEPROM.h>
 
 // Software version and writing time
-#define SWVERSION "1.0"
-#define SWDATE "02-15"
+#define SWVERSION "1.1b"
+#define SWDATE "10-15"
 
 #define CONFIG_VERSION "OSTH1"
 #define CONFIG_START 32
@@ -412,74 +412,6 @@ void menu(int btn) {
 }
 
 
-void setup()
-{
-	char version[20];	
-
-	Serial.begin(9600);
-
-	pinMode(UPBTN_PIN, INPUT);
-	pinMode(ENTBTN_PIN, INPUT);
-	pinMode(DOWNBTN_PIN, INPUT);
-	pinMode(TOGGLESW_PIN, INPUT);
-	pinMode(RELAY_PIN, OUTPUT);
-	pinMode(LED1_PIN, OUTPUT);
-
-	// Initialize timers
-	for(int i=0;i < TIMERS;i++) {
-		timers[i] = 0;
-	}
-
-	// Initialize time calculators
-	for(int i=0; i <= 2; i++) {
-		uptime[i]=0;
-		burntime[i]=0;
-	}
-
-	// Our relay pulls when RELAY_PIN is LOW, this is somewhat
-	// inconvinient, but it should work out just fine
-	digitalWrite(RELAY_PIN, HIGH);
-	digitalWrite(LED1_PIN, LOW);
-
-	// Read configuration from EEPROM, or if they're
-	// not found use default values
-	if (	EEPROM.read(CONFIG_START + 0) == CONFIG_VERSION[0] &&
-		EEPROM.read(CONFIG_START + 1) == CONFIG_VERSION[1] &&
-		EEPROM.read(CONFIG_START + 2) == CONFIG_VERSION[2]) {
-
-		Serial.println("Reading EEPROM");
-		for (unsigned int t=0; t<sizeof(storage); t++) {
-		      *((char*)&storage + t) = EEPROM.read(CONFIG_START + t);
-		      Serial.println(*((char*)&storage + t));
-		}
-	}
-	// Move values from configuration to actual variables used.
-	// This is a bit useless step, since we could use variables
-	// directly from configuration, but at this point I won't fix
-	// this
-	warmup_time = storage.c_warmup_time;
-	cooldown_time = storage.c_cooldown_time;
-	low_temp = storage.c_low_temp;
-	high_temp = storage.c_high_temp;
-
-	lcd.begin(LCD_WIDTH, LCD_HEIGHT);               // initialize the lcd 
-	lcd.home ();                   // go home
-
-	// Output some version information on startup
-	lcd.print("O-S Thermostat");  
-	lcd.setCursor ( 0, 1 );        // go to the next line
-	sprintf(version, "ver %s %s", SWVERSION, SWDATE);
-	lcd.print (version);
-	delay ( 1000 );
-
-	lcd.clear();
-	findOneWire();
-
-	timers[2] = BACKLIGHT_DELAY;
-	bglState = 1;
-	return;
-}
-
 // Read sensor data and store it in string to cur_temp char[]
 // Uses timers[1] to create non-blocking environment
 void ReadOneWire() {
@@ -615,6 +547,79 @@ void changePhase() {
 			}
 			break;
 	}
+}
+
+// Function: Setup
+//
+// Initialize subsystems and start main loop
+//
+void setup()
+{
+	char version[20];	
+
+	Serial.begin(9600);
+
+	pinMode(UPBTN_PIN, INPUT);
+	pinMode(ENTBTN_PIN, INPUT);
+	pinMode(DOWNBTN_PIN, INPUT);
+	pinMode(TOGGLESW_PIN, INPUT);
+	pinMode(RELAY_PIN, OUTPUT);
+	pinMode(LED1_PIN, OUTPUT);
+
+	// Initialize timers
+	for(int i=0;i < TIMERS;i++) {
+		timers[i] = 0;
+	}
+
+	// Initialize time calculators
+	for(int i=0; i <= 2; i++) {
+		uptime[i]=0;
+		burntime[i]=0;
+	}
+
+	// Our relay pulls when RELAY_PIN is LOW, this is somewhat
+	// inconvinient, but it should work out just fine
+	digitalWrite(RELAY_PIN, HIGH);
+	digitalWrite(LED1_PIN, LOW);
+
+	// Read configuration from EEPROM, or if they're
+	// not found use default values
+	if (	EEPROM.read(CONFIG_START + 0) == CONFIG_VERSION[0] &&
+		EEPROM.read(CONFIG_START + 1) == CONFIG_VERSION[1] &&
+		EEPROM.read(CONFIG_START + 2) == CONFIG_VERSION[2]) {
+
+		Serial.println("Reading EEPROM");
+		for (unsigned int t=0; t<sizeof(storage); t++) {
+		      *((char*)&storage + t) = EEPROM.read(CONFIG_START + t);
+		      Serial.println(*((char*)&storage + t));
+		}
+	}
+	// Move values from configuration to actual variables used.
+	// This is a bit useless step, since we could use variables
+	// directly from configuration, but at this point I won't fix
+	// this
+	warmup_time = storage.c_warmup_time;
+	cooldown_time = storage.c_cooldown_time;
+	low_temp = storage.c_low_temp;
+	high_temp = storage.c_high_temp;
+
+	lcd.begin(LCD_WIDTH, LCD_HEIGHT);               // initialize the lcd 
+	lcd.home ();                   // go home
+
+	// Output some version information on startup
+	lcd.print("O-S Thermostat");  
+	lcd.setCursor ( 0, 1 );        // go to the next line
+	sprintf(version, "ver %s %s", SWVERSION, SWDATE);
+	lcd.print (version);
+	findOneWire();
+	ReadOneWire();
+	delay ( 500 );
+
+	lcd.clear();
+
+	timers[2] = BACKLIGHT_DELAY;
+	bglState = 1;
+	return;
 }
 
 
