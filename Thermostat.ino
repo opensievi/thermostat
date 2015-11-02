@@ -1,3 +1,15 @@
+// OpenSievi Thermostat
+// https://github.com/opensievi/thermostat
+//
+// Copyright (c) 2015 Tapio Salonsaari <take@nerd.fi>
+// 
+// This arudino project is to control diesel powered heaters. Temperature is read with 
+// DS18B20 (or similar) sensor, heater is controlled via relay and use interface is 
+// done with 16x2 LCD display and couple of buttons.
+//
+// See README.md and LICENSE.txt for more info
+//
+
 #include <LiquidCrystal_I2C.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
