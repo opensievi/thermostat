@@ -9,6 +9,8 @@ with 16x2 LCD display and couple of buttons.
 
 - OneWire
 - LiquidCrystal_I2C
+- DallasTemperature
+- EEPROM
 
 # Basic program loop
 
@@ -53,15 +55,6 @@ There's quite a few of them, so some documentation is necessary.
     do anything
    
 
-# ToDo
-
-- Error handling when 1Wire sensor doesn't work
-- User interface (menu, current phase, etc)
-- Relay control
-- LCD backlight control
-- Different phases
-- Lots of other things...
-
 # Version history
 
 (We'll need some kind of roadmap tool)
@@ -74,4 +67,12 @@ There's quite a few of them, so some documentation is necessary.
 ## 0.5
 
 - Basic thermostat functionality works
+
+## 1.0 02-15
+
+- 1st version with all the features, including saving settings to EEPROM
+
+## 1.1b 10-15
+
+- Minor bug fixes from 1.0
 
