@@ -697,43 +697,52 @@ void loop()
 	int whole;
 	int fract;
 
+	if(textState == 1) {
+		sprintf(buf,"Up: %2d:%02d:%02d    ",uptime[0],uptime[1],uptime[2]);
+	} else if(textState == 2) {
+		sprintf(buf,"Burn: %2d:%02d:%02d  ",burntime[0],burntime[1],burntime[2]);
+	} 
+	if( textTime == 0) {
+		textState++;
+		textTime = 5000;
+		if(textState > 2) {
+			textState = 0;
+		}
+	}
 	switch(cur_phase) {
 		case 0:
 			sprintf(phasetxt, "%s", "STDBY");
-			if(textState == 1) {
-				sprintf(buf,"Up: %2d:%02d:%02d  ",uptime[0],uptime[1],uptime[2]);
-			} else if(textState == 2) {
-				sprintf(buf,"Burn: %2d:%02d:%02d  ",burntime[0],burntime[1],burntime[2]);
-			} else {
+			if(textState == 0) {
 				sprintf(buf,"Standby...      ");
-			}
-			if( textTime == 0) {
-				textState++;
-				textTime = 5000;
-				if(textState > 2) {
-					textState = 0;
-				}
 			}
 			break;
 		case 1:
 			sprintf(phasetxt,"%s", "WARMUP");
-			sprintf(buf,"Warming, T-%dm     ", tminus);
+			if(textState == 0) {
+				sprintf(buf,"Warming, T-%dm     ", tminus);
+			}
 			break;
 		case 2:
 			sprintf(phasetxt, "%s", "WARMING");
 			whole = high_temp / 10;
 			fract = high_temp % 10;
-			sprintf(buf,"Heating to %2d.%d\337",whole,fract);
+			if(textState == 0) {
+				sprintf(buf,"Heating to %2d.%d\337",whole,fract);
+			}
 			break;
 		case 3:
 			sprintf(phasetxt,"%s", "COOLDOWN");
-			sprintf(buf,"Cooldown, T-%dm     ", tminus);
+			if(textState == 0) {
+				sprintf(buf,"Cooldown, T-%dm     ", tminus);
+			}
 			break;
 		case 4:
 			sprintf(phasetxt, "%s", "COOLING");
 			whole = low_temp / 10;
 			fract = low_temp % 10;
-			sprintf(buf,"Cooling to %2d.%d\337",whole,fract);
+			if(textState == 0) {
+				sprintf(buf,"Cooling to %2d.%d\337",whole,fract);
+			}
 			break;
 	}
 
