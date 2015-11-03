@@ -23,7 +23,7 @@
 #define CONFIG_START 32
 
 // Behaviour
-#define BTN_DELAY 50 // 50ms delay for button to stop jitter
+#define BTN_DELAY 30 // 50ms delay for button to stop jitter
 #define MENU_DELAY 10000 // 10seconds delay for menu to exit automatically
 #define TIMERS 4 // Number of timers
 #define BACKLIGHT_DELAY 1200000 // Backlight delay, 20minutes
@@ -432,7 +432,6 @@ void ReadOneWire() {
 
 		Serial.println("Requesting temperatures from 1wire bus");
 		sensors.requestTemperatures();
-		timers[1] = 2500;
 		oneWireState = 1;
 		timers[1] = 1000;
 	}
@@ -447,7 +446,7 @@ void ReadOneWire() {
 		timers[1] = 2500;
 
 		Serial.print("Reading data from 1wire...");
-		cTemp = sensors.getTempC(insideThermometer);
+		cTemp = sensors.getTempCByIndex(0);
 		Serial.println(cTemp);
 
 		if(cTemp > 0) {
