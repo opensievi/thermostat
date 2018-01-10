@@ -10,14 +10,14 @@
 // See README.md and LICENSE.txt for more info
 //
 
-#include <LiquidCrystal_I2C.h>
-#include <OneWire.h>
-#include <DallasTemperature.h>
+#include "LiquidCrystal_I2C/LiquidCrystal_I2C.h"
+#include "PinChangeInt/PinChangeInt.h"
 #include <EEPROM.h>
+#include <DHT.h>
 
 // Software version and writing time
-#define SWVERSION "1.1b"
-#define SWDATE "10-15"
+#define SWVERSION "1.5"
+#define SWDATE "12-17"
 
 #define CONFIG_VERSION "OSTH1"
 #define CONFIG_START 32
@@ -29,13 +29,16 @@
 #define BACKLIGHT_DELAY 1200000 // Backlight delay, 20minutes
 
 // Pin layout
-#define RELAY_PIN 2
-#define DS_PIN 3
-#define UPBTN_PIN 4
-#define ENTBTN_PIN 5
-#define DOWNBTN_PIN 6
-#define TOGGLESW_PIN 7
-#define LED1_PIN 13
+#define RELAY_PIN 12
+#define DHT_PIN 5
+#define TOGGLESW_PIN 6
+#define ROTARYBTN_PIN 7
+#define ROTARYFWD_PIN 8
+#define ROTARYRWD_PIN 9
+#define LED1_PIN 11
+#define LED2_PIN 10
+#define BUTTONS 1
+
 
 // LCD used
 #define LCD_WIDTH 16
@@ -60,20 +63,18 @@ struct StoredConf {
 
 // Init subsystems
 LiquidCrystal_I2C lcd(LCD_ADDRESS, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE);
-OneWire ds(DS_PIN);
-DallasTemperature sensors(&ds);
-DeviceAddress insideThermometer;
+DHT dht;
+
 
 // There's quite a few phase tracking variables here,
 // maybe we could take some of them off, maybe?
-int btnPressed = 0;
-int btnState = 0;
-int btnLock = 0;
+int btn_queue[BUTTONS];
+int rotary_count=0;
+
 int textState = 0;
 int bglState = 0;
-int oneWireState = 0;
+int tempSensorState = 0;
 
-byte ow_addr[8];
 int cur_menu_phase=0; // current menu phase(page)
 int cur_menu_state=0; // 0 = display, 1 = edit..
 
@@ -81,6 +82,7 @@ int cur_phase=0; // current working phase
 int cur_subphase=0; // some phases require some refining...
 
 char cur_temp[20] = "wait...";
+int f_cur_humidity;
 int f_cur_temp;
 
 unsigned long timers[TIMERS]; // Countdown timers
@@ -113,71 +115,47 @@ unsigned long cooldown_time;
 //int high_temp = 200;
 int low_temp;
 int high_temp;
+int dhtSamplingPeriod;
 
-// Check that we actually have temperature sensor,
-// and verify that we don't do anything unless
-// we have one.
-int findOneWire() {
+// Interrupt function to track down buttons
+void trigger_button() {
 
-	sensors.begin();
-	
-	while (!sensors.getAddress(insideThermometer, 0)) { 
-		Serial.println("Unable to find address for Device 0");
-		lcd.clear();
-		lcd.home();
-		lcd.print("No sensor address!");
-		delay(1000);
-	}
+        int cur_button = PCintPort::arduinoPin;
 
-	sensors.setResolution(insideThermometer, 12);
-	return 0;
+        switch (cur_button) {
+
+                case ROTARYBTN_PIN:
+                        btn_queue[0]++;
+                        break;
+
+                default:
+                        // We don't have this button?
+                        break;
+        }
+
 }
 
-// Read buttons. Current schema requires only that single button
-// functions at a time so this will do.
-int readButtons() {
+// Interrupt trigger for rotary button, we only
+// track the last direction it was turned
+void rotary_trigger() {
 
-	int bState = 0;
-	int t_btnPressed = 0;
-	int t_pressed = 0;
-	
-	bState = digitalRead(UPBTN_PIN);
-	if(bState == HIGH) {
-		t_btnPressed = 1;
-		t_pressed = 1;
+        int pinA = digitalRead(ROTARYFWD_PIN);
+        int pinB = digitalRead(ROTARYRWD_PIN);
+
+	if(rotary_count != 0) {
+		return;
 	}
 
-	bState = digitalRead(ENTBTN_PIN);
-	if(bState == HIGH) {
-		t_btnPressed = 2;
-		t_pressed = 1;
-	}
+	btn_queue[0]=0;
 
-	bState = digitalRead(DOWNBTN_PIN);
-	if(bState == HIGH) {
-		t_btnPressed = 3;
-		t_pressed = 1;
-	}
-
-	if(t_pressed != btnState) {
-		timers[0]=BTN_DELAY;
-		btnState = t_pressed;
-	}
-
-	if(btnPressed != t_btnPressed) {
-		
-		if(timers[0] == 0) {
-			btnPressed = t_btnPressed;
-		} 
-	}
-
-	if(btnLock == btnPressed) {
-		return 0;
-	} else {
-		btnLock = 0;
-		return btnPressed;
-	}
+        if(pinA != pinB) {
+                rotary_count=-1;
+        } else {
+                rotary_count=1;
+        }
 }
+
+
 
 // Do timer calculations
 void count_timers() {
@@ -243,25 +221,26 @@ void count_timers() {
 }	
 
 
-void menu(int btn) {
+void menu() {
 
 	char buf[25];
 	char buf2[25];
 
 	if(cur_menu_state == 0) {
 
-		switch(btn) {
+		switch(rotary_count) {
 	
 			case 1:
 				cur_menu_phase++;
 				timers[3]=MENU_DELAY;
 				break;
 
-			case 2:
+			case -1:
 				cur_menu_phase--;
 				timers[3]=MENU_DELAY;
 				break;
 		}
+		rotary_count = 0;
 	} 
 
 	// Return if there's nothing to do
@@ -269,7 +248,7 @@ void menu(int btn) {
 		return;
 	}
 
-	if(btn > 0) {
+	if(rotary_count != 0) {
 		timers[3] = MENU_DELAY;
 	}
 
@@ -295,7 +274,7 @@ void menu(int btn) {
 
                 case 1:
 			if(cur_menu_state) {
-				switch(btn) {
+				switch(rotary_count) {
 					
 					case 1:
 						low_temp+=10;
@@ -303,13 +282,14 @@ void menu(int btn) {
 							low_temp = 600;
 						}
 						break;
-					case 2:
+					case -1:
 						low_temp-=10;
 						if(low_temp < 0) {
 							low_temp = 0;
 						}
 						break;
 				}
+				rotary_count = 0;
 			}
 			sprintf(buf,"%-16s","Low temp limit");
 			sprintf(buf2,"%-2d\337%-11s",low_temp/10," ");
@@ -317,20 +297,21 @@ void menu(int btn) {
 
                 case 2:
 			if(cur_menu_state) {
-				switch(btn) {
+				switch(rotary_count) {
 					case 1:
 						high_temp+=10;
 						if(high_temp > 600) {
 							high_temp = 600;
 						}
 						break;
-					case 2:
+					case -1:
 						high_temp-=10;
 						if(high_temp < 0) {
 							high_temp = 0;
 						}
 						break;
 				}
+				rotary_count = 0;
 			}
 
 			sprintf(buf,"%-16s","High temp limit");
@@ -339,14 +320,14 @@ void menu(int btn) {
 
                 case 3:
 			if(cur_menu_state) {
-				switch(btn) {
+				switch(rotary_count) {
 					case 1:
 						warmup_time += 60000;
 						if(warmup_time > 3600000) {
 							warmup_time = 3600000;
 						}
 						break;
-					case 2:
+					case -1:
 						if(warmup_time > 60000) {
 							warmup_time -= 60000;
 						} else {
@@ -354,6 +335,7 @@ void menu(int btn) {
 						}
 						break;
 				}
+				rotary_count = 0;
 			}
 			sprintf(buf,"%-16s","Warmup burn time");
 			sprintf(buf2,"%-2lumin%9s",warmup_time/1000/60," ");
@@ -361,7 +343,7 @@ void menu(int btn) {
 
                 case 4:
 			if(cur_menu_state) {
-				switch(btn) {
+				switch(rotary_count) {
 					case 1:
 						cooldown_time += 60000;
 						// Millisecond times. 3.6e6ms == 1 hour
@@ -369,7 +351,7 @@ void menu(int btn) {
 							cooldown_time = 3600000;
 						}
 						break;
-					case 2:
+					case -1:
 						if(cooldown_time > 60000) {
 							cooldown_time -= 60000;
 						} else {
@@ -377,6 +359,7 @@ void menu(int btn) {
 						}
 						break;
 				}
+				rotary_count = 0;
 			}
 			sprintf(buf,"%-16s","Cooldown time");
 			sprintf(buf2,"%-2lumin%9s",cooldown_time/1000/60," ");
@@ -426,27 +409,45 @@ void menu(int btn) {
 
 // Read sensor data and store it in string to cur_temp char[]
 // Uses timers[1] to create non-blocking environment
-void ReadOneWire() {
+void ReadDHT() {
 
-	if(timers[1] == 0 && oneWireState == 0) {
+	if(timers[1] == 0 && tempSensorState == 0) {
 
 		Serial.println("Requesting temperatures from 1wire bus");
-		sensors.requestTemperatures();
-		oneWireState = 1;
-		timers[1] = 1000;
+		tempSensorState = 1;
+		timers[1] = dhtSamplingPeriod;
 	}
 
-	if(timers[1] == 0 && oneWireState == 1) {
+	if(timers[1] == 0 && tempSensorState == 1) {
 
 		float cTemp;
-		int temp100;
 		int Whole, Fract, tFract;
 		int positive=0;
-		oneWireState = 0;
+		tempSensorState = 0;
 		timers[1] = 2500;
 
 		Serial.print("Reading data from 1wire...");
-		cTemp = sensors.getTempCByIndex(0);
+		int t_led=0;
+		while(strcmp(dht.getStatusString(),"OK") != 0) {
+			digitalWrite(RELAY_PIN, LOW);	
+			digitalWrite(LED2_PIN, LOW);
+			if(t_led==0) {
+				digitalWrite(LED1_PIN, HIGH);
+				t_led = 1;
+			} else {
+				digitalWrite(LED1_PIN, LOW);
+				t_led = 0;
+			}
+			Serial.print("Sensor status: ");
+			Serial.println(dht.getStatusString());
+			lcd.clear();
+			lcd.home();
+			lcd.print("DHT sensor error:");
+			lcd.setCursor(0,1);
+			lcd.print(dht.getStatusString());
+			delay(500);
+		}
+		cTemp = dht.getTemperature();
 		Serial.println(cTemp);
 
 		if(cTemp > 0) {
@@ -462,6 +463,7 @@ void ReadOneWire() {
 			Fract++;
 
 		f_cur_temp = Whole*10 + Fract;
+		f_cur_humidity = dht.getHumidity();
 		sprintf(cur_temp, "%c%2d.%1d\337 ",positive ? '+' : '-', Whole, Fract);
 	}
 
@@ -475,13 +477,11 @@ void changePhase() {
 	switch(cur_phase) {
 		case 0: // Standby
 			if(cur_subphase == 0) {
-				digitalWrite(LED1_PIN, LOW);
 				cur_subphase++;
 			}
 			// Switch to warmup
-			if(togglestate == HIGH) {
+			if(togglestate == LOW) {
 				timers[2] = BACKLIGHT_DELAY; 
-				digitalWrite(LED1_PIN, HIGH);
 				cur_phase=4;
 				cur_subphase=0;
 			}
@@ -493,20 +493,22 @@ void changePhase() {
 			// Start burner	and reset timer
 			if(cur_subphase == 0) {
 				wait_timer = warmup_time;
-				digitalWrite(RELAY_PIN, LOW); 
+				digitalWrite(RELAY_PIN, HIGH); 
+				digitalWrite(LED2_PIN, HIGH);
 				cur_subphase = 1;
 			}
 
 			if(wait_timer == 0 && cur_subphase == 1) {
 				cur_subphase=0;
-				if(togglestate == HIGH) {
+				if(togglestate == LOW) {
 					cur_phase=2;
 				} else {
 					// If we turned heating off during
 					// warmup phase move to cooldown
 					wait_timer = cooldown_time;
 					cur_phase=3;
-					digitalWrite(RELAY_PIN, HIGH);
+					digitalWrite(RELAY_PIN, LOW);
+					digitalWrite(LED2_PIN, LOW);
 				}
 			}
 			break;
@@ -514,12 +516,13 @@ void changePhase() {
 
 			// If switch is turned off then switch instantly to cooldown mode
 			// or switch to cooldown until temperature has risen enough
-			if(togglestate != HIGH || f_cur_temp >= high_temp) {
+			if(togglestate != LOW || f_cur_temp >= high_temp) {
 				wait_timer = cooldown_time;
 				cur_phase = 3;
 
 				// Turn heater off
-				digitalWrite(RELAY_PIN, HIGH);
+				digitalWrite(RELAY_PIN, LOW);
+				digitalWrite(LED2_PIN, LOW);
 			}
 
 			break;
@@ -537,7 +540,7 @@ void changePhase() {
 				cur_phase = 1;
 			}
 
-			if(togglestate != HIGH) {
+			if(togglestate != LOW) {
 				cur_phase = 0;
 				cur_subphase = 0;
 			}
@@ -547,8 +550,20 @@ void changePhase() {
 			// ever happens. We go to infinite loop
 			// and shut everything down.
 			char buf[20];
-			digitalWrite(RELAY_PIN,HIGH); // Shut off burner
+			digitalWrite(RELAY_PIN,LOW); // Shut off burner
+			digitalWrite(LED2_PIN, LOW);
+			int l_tmp=0;
 			while(1) {
+				if(l_tmp==0) {
+					digitalWrite(LED1_PIN, HIGH);
+					digitalWrite(LED2_PIN, LOW);
+					l_tmp=1;
+				} else {
+					digitalWrite(LED1_PIN, LOW);
+					digitalWrite(LED2_PIN, HIGH);
+					l_tmp=0;
+				}
+
 				lcd.home();
 				lcd.print("PHASE ERROR            ");
 				lcd.setCursor(0,1);
@@ -570,12 +585,13 @@ void setup()
 
 	Serial.begin(9600);
 
-	pinMode(UPBTN_PIN, INPUT);
-	pinMode(ENTBTN_PIN, INPUT);
-	pinMode(DOWNBTN_PIN, INPUT);
-	pinMode(TOGGLESW_PIN, INPUT);
+	pinMode(ROTARYBTN_PIN, INPUT_PULLUP);
+	pinMode(ROTARYFWD_PIN, INPUT_PULLUP);
+	pinMode(ROTARYRWD_PIN, INPUT_PULLUP);
+	pinMode(TOGGLESW_PIN, INPUT_PULLUP);
 	pinMode(RELAY_PIN, OUTPUT);
 	pinMode(LED1_PIN, OUTPUT);
+	pinMode(LED2_PIN, OUTPUT);
 
 	// Initialize timers
 	for(int i=0;i < TIMERS;i++) {
@@ -588,10 +604,7 @@ void setup()
 		burntime[i]=0;
 	}
 
-	// Our relay pulls when RELAY_PIN is LOW, this is somewhat
-	// inconvinient, but it should work out just fine
-	digitalWrite(RELAY_PIN, HIGH);
-	digitalWrite(LED1_PIN, LOW);
+	digitalWrite(RELAY_PIN, LOW);
 
 	// Read configuration from EEPROM, or if they're
 	// not found use default values
@@ -614,6 +627,16 @@ void setup()
 	low_temp = storage.c_low_temp;
 	high_temp = storage.c_high_temp;
 
+
+        // Initialize interrupts
+        attachPinChangeInterrupt(ROTARYBTN_PIN, trigger_button, FALLING);
+        attachPinChangeInterrupt(ROTARYFWD_PIN, rotary_trigger, CHANGE);
+
+        // Initialize button counters
+        for(int i=0; i < BUTTONS; i++) {
+                btn_queue[i] = 0;
+        }
+
 	lcd.begin(LCD_WIDTH, LCD_HEIGHT);               // initialize the lcd 
 	lcd.home ();                   // go home
 
@@ -622,9 +645,28 @@ void setup()
 	lcd.setCursor ( 0, 1 );        // go to the next line
 	sprintf(version, "ver %s %s", SWVERSION, SWDATE);
 	lcd.print (version);
-	findOneWire();
-	ReadOneWire();
+
+	dht.setup(DHT_PIN);
+	dhtSamplingPeriod = dht.getMinimumSamplingPeriod() * 2;
+
+	Serial.print("DHT sampling: ");
+	Serial.println(dhtSamplingPeriod);
 	delay ( 500 );
+
+	int t_led = 0;
+	while(strcmp(cur_temp, "wait...") == 0) {
+		if(t_led == 0) {
+			digitalWrite(LED1_PIN, HIGH);
+			t_led = 1;
+		} else {
+			digitalWrite(LED1_PIN, LOW);
+			t_led = 0;
+		}
+		count_timers();
+		ReadDHT();
+		delay(100);
+	}
+	digitalWrite(LED1_PIN, HIGH);
 
 	lcd.clear();
 
@@ -643,7 +685,7 @@ void loop()
 	char phasetxt[10]="WAIT";
 
 	count_timers(); // Manage time calculations
-	ReadOneWire(); // Read temperature sensor
+	ReadDHT(); // Read temperature sensor
 
 	// Run phase changes if necessary, this is
 	// EXTREMELY important, since if phases won't
@@ -651,14 +693,9 @@ void loop()
 	// break.
 	changePhase(); 
 
-	int btn = readButtons();
-	// Set button lock so we have to release button 
-	// before taking another action. This is somewhat
-	// inconvinient, but will do for now.
-	if(btn > 0) {
-		// Update backlight delay on every button press
+	// Update backlight delay on every button press
+	if(btn_queue[0] > 0 || rotary_count != 0) {
 		timers[2] = BACKLIGHT_DELAY;
-		btnLock = btn;
 	}
 
 	// Shut down backlight if necessary
@@ -676,16 +713,17 @@ void loop()
 	}
 
 	// Enter edit mode
-	if(cur_menu_phase > 0 && btn == 3) {
+	if(cur_menu_phase > 0 && btn_queue[0] > 0) {
 		if(cur_menu_state == 1) {
 			cur_menu_state = 0;
 		} else {
 			cur_menu_state = 1;
 		}
+		btn_queue[0]=0;
 		return;
 	}
 
-	menu(btn);
+	menu();
 	// Don't display running data over menu
 	if(cur_menu_phase != 0) {
 		return;
@@ -699,12 +737,15 @@ void loop()
 	if(textState == 1) {
 		sprintf(buf,"Up: %2d:%02d:%02d    ",uptime[0],uptime[1],uptime[2]);
 	} else if(textState == 2) {
-		sprintf(buf,"Burn: %2d:%02d:%02d  ",burntime[0],burntime[1],burntime[2]);
-	} 
+		sprintf(buf,"Active: %2d:%02d:%02d  ",burntime[0],burntime[1],burntime[2]);
+	} else if(textState == 3) {
+		sprintf(buf,"Humidity: %-3d%%   ", f_cur_humidity);
+	}
+
 	if( textTime == 0) {
 		textState++;
 		textTime = 5000;
-		if(textState > 2) {
+		if(textState > 3) {
 			textState = 0;
 		}
 	}
